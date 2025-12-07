@@ -57,6 +57,7 @@ func (c *RobotCLI) Help() error {
 					"references":   "array of Reference objects (optional)",
 					"entities":     "array of Entity objects (optional)",
 					"linked_beads": "array of bead IDs (optional)",
+					"created_at":   "RFC3339 timestamp (optional) - backdate the beat",
 				},
 				"output": "Beat object with id and timestamps",
 			},

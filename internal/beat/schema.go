@@ -76,15 +76,19 @@ type ProposedBeat struct {
 	References  []Reference `json:"references,omitempty"`
 	Entities    []Entity    `json:"entities,omitempty"`
 	LinkedBeads []string    `json:"linked_beads,omitempty"`
+	CreatedAt   *time.Time  `json:"created_at,omitempty"`
 }
 
 // ToBeat converts a ProposedBeat to a full Beat with ID and timestamps.
 func (p *ProposedBeat) ToBeat(seq int) *Beat {
-	now := time.Now().UTC()
+	t := time.Now().UTC()
+	if p.CreatedAt != nil {
+		t = p.CreatedAt.UTC()
+	}
 	return &Beat{
-		ID:          GenerateIDWithSequence(now, seq),
-		CreatedAt:   now,
-		UpdatedAt:   now,
+		ID:          GenerateIDWithSequence(t, seq),
+		CreatedAt:   t,
+		UpdatedAt:   t,
 		Impetus:     p.Impetus,
 		Content:     p.Content,
 		References:  p.References,
