@@ -5,8 +5,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/moritzbierling/beats/internal/beat"
-	"github.com/moritzbierling/beats/internal/store"
+	"github.com/bierlingm/beats/internal/beat"
+	"github.com/bierlingm/beats/internal/store"
 )
 
 // HumanCLI handles human-facing CLI commands.
@@ -140,6 +140,31 @@ func (c *HumanCLI) Search(query string, maxResults int) error {
 		fmt.Printf("              %s\n\n", preview)
 	}
 
+	return nil
+}
+
+// Link adds bead IDs to a beat's linked_beads.
+func (c *HumanCLI) Link(beatID string, beadIDs []string) error {
+	updated, err := c.store.Update(beatID, func(b *beat.Beat) error {
+		// Add new bead IDs, avoiding duplicates
+		existing := make(map[string]bool)
+		for _, id := range b.LinkedBeads {
+			existing[id] = true
+		}
+		for _, id := range beadIDs {
+			if !existing[id] {
+				b.LinkedBeads = append(b.LinkedBeads, id)
+				existing[id] = true
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("failed to link beat: %w", err)
+	}
+
+	fmt.Printf("Updated %s\n", updated.ID)
+	fmt.Printf("Linked beads: %s\n", strings.Join(updated.LinkedBeads, ", "))
 	return nil
 }
 

@@ -12,7 +12,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/moritzbierling/beats/internal/beat"
+	"github.com/bierlingm/beats/internal/beat"
+	"github.com/bierlingm/beats/internal/hooks"
 )
 
 const (
@@ -51,24 +52,44 @@ func NewJSONLStore(dir string) (*JSONLStore, error) {
 // Append adds a new beat to the store.
 func (s *JSONLStore) Append(b *beat.Beat) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	f, err := os.OpenFile(s.filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
+		s.mu.Unlock()
 		return fmt.Errorf("failed to open beats file: %w", err)
 	}
 	defer f.Close()
 
 	data, err := json.Marshal(b)
 	if err != nil {
+		s.mu.Unlock()
 		return fmt.Errorf("failed to marshal beat: %w", err)
 	}
 
 	if _, err := f.Write(append(data, '\n')); err != nil {
+		s.mu.Unlock()
 		return fmt.Errorf("failed to write beat: %w", err)
 	}
 
+	// Read all beats while still holding the lock
+	allBeats, _ := s.readAllUnlocked()
+	s.mu.Unlock()
+
+	// Trigger hooks synchronously (fast enough, goroutine was exiting before completion)
+	s.triggerHooks(b, allBeats)
+
 	return nil
+}
+
+// triggerHooks runs hook checks after a beat is added.
+func (s *JSONLStore) triggerHooks(newBeat *beat.Beat, allBeats []beat.Beat) {
+	hookMgr, err := hooks.NewManager(s.dir)
+	if err != nil {
+		return // Silently ignore hook errors
+	}
+
+	// Fire-and-forget: hook errors don't affect beat storage
+	_ = hookMgr.OnBeatAdded(newBeat, allBeats)
 }
 
 // ReadAll reads all beats from the store.
@@ -269,4 +290,79 @@ func (s *JSONLStore) Path() string {
 // Dir returns the beats directory path.
 func (s *JSONLStore) Dir() string {
 	return s.dir
+}
+
+// Update modifies a beat in place by rewriting the JSONL file.
+// The updater function receives a pointer to the beat and can modify it.
+func (s *JSONLStore) Update(id string, updater func(*beat.Beat) error) (*beat.Beat, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	beats, err := s.readAllUnlocked()
+	if err != nil {
+		return nil, err
+	}
+
+	var updated *beat.Beat
+	found := false
+	for i := range beats {
+		if beats[i].ID == id {
+			if err := updater(&beats[i]); err != nil {
+				return nil, fmt.Errorf("updater failed: %w", err)
+			}
+			beats[i].UpdatedAt = time.Now().UTC()
+			updated = &beats[i]
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		return nil, fmt.Errorf("beat not found: %s", id)
+	}
+
+	// Rewrite the entire file
+	if err := s.rewriteUnlocked(beats); err != nil {
+		return nil, err
+	}
+
+	return updated, nil
+}
+
+// rewriteUnlocked rewrites the JSONL file with the given beats.
+// Caller must hold the write lock.
+func (s *JSONLStore) rewriteUnlocked(beats []beat.Beat) error {
+	// Write to temp file first for atomicity
+	tmpPath := s.filePath + ".tmp"
+	f, err := os.Create(tmpPath)
+	if err != nil {
+		return fmt.Errorf("failed to create temp file: %w", err)
+	}
+
+	for _, b := range beats {
+		data, err := json.Marshal(b)
+		if err != nil {
+			f.Close()
+			os.Remove(tmpPath)
+			return fmt.Errorf("failed to marshal beat %s: %w", b.ID, err)
+		}
+		if _, err := f.Write(append(data, '\n')); err != nil {
+			f.Close()
+			os.Remove(tmpPath)
+			return fmt.Errorf("failed to write beat %s: %w", b.ID, err)
+		}
+	}
+
+	if err := f.Close(); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("failed to close temp file: %w", err)
+	}
+
+	// Atomic rename
+	if err := os.Rename(tmpPath, s.filePath); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("failed to rename temp file: %w", err)
+	}
+
+	return nil
 }

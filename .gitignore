@@ -21,10 +21,8 @@ go.work
 *.swp
 *.swo
 
-# SQLite database (auto-generated from JSONL)
-.beats/*.db
-.beats/*.db-shm
-.beats/*.db-wal
+# Beats data directory (user-specific)
+.beats/
 
 # OS files
 .DS_Store

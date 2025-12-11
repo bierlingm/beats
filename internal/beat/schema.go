@@ -134,14 +134,14 @@ type ProposedLink struct {
 
 // MapBeatsToBeadsOutput is the output of --robot-map-beats-to-beads.
 type MapBeatsToBeadsOutput struct {
-	ProposedNewEpics       []ProposedEpic `json:"proposed_new_epics"`
+	ProposedNewEpics        []ProposedEpic `json:"proposed_new_epics"`
 	ProposedLinksToExisting []ProposedLink `json:"proposed_links_to_existing"`
 }
 
 // DiffOutput is the output of --robot-diff.
 type DiffOutput struct {
-	NewBeats          []Beat   `json:"new_beats"`
-	ModifiedBeats     []Beat   `json:"modified_beats"`
+	NewBeats           []Beat   `json:"new_beats"`
+	ModifiedBeats      []Beat   `json:"modified_beats"`
 	BeatsLinkedToBeads []Beat   `json:"beats_linked_to_beads"`
-	DeletedIDs        []string `json:"deleted_ids"`
+	DeletedIDs         []string `json:"deleted_ids"`
 }

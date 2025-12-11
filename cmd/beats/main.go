@@ -6,11 +6,12 @@ import (
 	"os"
 	"strings"
 
-	"github.com/moritzbierling/beats/internal/cli"
-	"github.com/moritzbierling/beats/internal/store"
+	"github.com/bierlingm/beats/internal/cli"
+	"github.com/bierlingm/beats/internal/hooks"
+	"github.com/bierlingm/beats/internal/store"
 )
 
-const version = "0.1.1"
+const version = "0.2.0"
 
 func main() {
 	if err := run(); err != nil {
@@ -56,7 +57,9 @@ func handleRobotCommand(cmd string, args []string) error {
 	// Parse optional --dir flag for robot commands
 	robotFlags := flag.NewFlagSet("robot", flag.ExitOnError)
 	beatsDir := robotFlags.String("dir", "", "Beats directory")
-	robotFlags.Parse(args)
+	if err := robotFlags.Parse(args); err != nil {
+		return fmt.Errorf("failed to parse flags: %w", err)
+	}
 
 	jsonStore, err := store.NewJSONLStore(*beatsDir)
 	if err != nil {
@@ -83,6 +86,12 @@ func handleRobotCommand(cmd string, args []string) error {
 		return robotCLI.MapBeatsToBeads(os.Stdin)
 	case "--robot-diff":
 		return robotCLI.Diff(os.Stdin)
+	case "--robot-link-beat":
+		return robotCLI.LinkBeat(os.Stdin)
+	case "--robot-synthesis-status":
+		return robotCLI.SynthesisStatus()
+	case "--robot-synthesis-clear":
+		return robotCLI.SynthesisClear()
 	default:
 		return fmt.Errorf("unknown robot command: %s", cmd)
 	}
@@ -131,8 +140,59 @@ func handleHumanCommand(cmd string, args []string) error {
 		query := strings.Join(cmdArgs, " ")
 		return humanCLI.Search(query, *maxResults)
 
+	case "link":
+		if len(cmdArgs) < 2 {
+			return fmt.Errorf("link requires beat ID and at least one bead ID")
+		}
+		beatID := cmdArgs[0]
+		beadIDs := cmdArgs[1:]
+		return humanCLI.Link(beatID, beadIDs)
+
+	case "hooks":
+		return handleHooksCommand(jsonStore.Dir(), cmdArgs)
+
 	default:
 		return fmt.Errorf("unknown command: %s", cmd)
+	}
+}
+
+func handleHooksCommand(beatsDir string, args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("hooks requires a subcommand: init, status, clear")
+	}
+
+	subcmd := args[0]
+	switch subcmd {
+	case "init":
+		if err := hooks.InitDefaultConfig(beatsDir); err != nil {
+			return fmt.Errorf("failed to init hooks: %w", err)
+		}
+		fmt.Printf("Created hooks config at %s/hooks.json\n", beatsDir)
+		fmt.Println("Edit this file to configure synthesis triggers.")
+		return nil
+
+	case "status":
+		req, err := hooks.GetSynthesisRequest(beatsDir)
+		if err != nil {
+			fmt.Println("No synthesis pending.")
+			return nil
+		}
+		fmt.Printf("Synthesis triggered at: %s\n", req.TriggeredAt.Format("2006-01-02 15:04:05"))
+		fmt.Printf("Beats since last synthesis: %d\n", req.BeatsSinceLast)
+		fmt.Printf("Total beats: %d\n", req.TotalBeats)
+		fmt.Printf("Recent beats to review: %d\n", len(req.RecentBeats))
+		fmt.Println("\nUse 'beats hooks clear' after processing, or --robot-synthesis-status for full details.")
+		return nil
+
+	case "clear":
+		if err := hooks.ClearSynthesisNeeded(beatsDir); err != nil {
+			return fmt.Errorf("failed to clear synthesis: %w", err)
+		}
+		fmt.Println("Synthesis request cleared.")
+		return nil
+
+	default:
+		return fmt.Errorf("unknown hooks subcommand: %s (use: init, status, clear)", subcmd)
 	}
 }
 
@@ -153,6 +213,12 @@ HUMAN COMMANDS:
   search "query"         Search beats by content/impetus
     --max N              Maximum results (default 20)
 
+  link <beat-id> <bead-id>...  Link a beat to one or more beads
+
+  hooks init             Initialize hooks config (enables synthesis triggers)
+  hooks status           Check if synthesis is pending
+  hooks clear            Clear pending synthesis request
+
 ROBOT COMMANDS (JSON in/out via stdin/stdout):
   --robot-help                   Show robot command schemas
   --robot-propose-beat           Propose beat from raw text
@@ -162,6 +228,9 @@ ROBOT COMMANDS (JSON in/out via stdin/stdout):
   --robot-context-for-bead       Get context for a bead
   --robot-map-beats-to-beads     Suggest beat-to-bead mappings
   --robot-diff                   Get changes since timestamp
+  --robot-link-beat              Link a beat to beads
+  --robot-synthesis-status       Get synthesis status (JSON)
+  --robot-synthesis-clear        Clear synthesis request
 
 OPTIONS:
   --dir <path>           Beats directory (default: .beats)

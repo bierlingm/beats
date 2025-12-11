@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/moritzbierling/beats/internal/beat"
+	"github.com/bierlingm/beats/internal/beat"
 	_ "modernc.org/sqlite"
 )
 
@@ -18,9 +18,9 @@ const DefaultDBFile = "beats.db"
 // SQLiteStore provides SQLite-backed indexing over beats.
 // The JSONL file remains the canonical store; SQLite is a derived index.
 type SQLiteStore struct {
-	db       *sql.DB
-	dbPath   string
-	jsonl    *JSONLStore
+	db     *sql.DB
+	dbPath string
+	jsonl  *JSONLStore
 }
 
 // NewSQLiteStore creates a new SQLite store that indexes the given JSONL store.

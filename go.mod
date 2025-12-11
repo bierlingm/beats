@@ -1,4 +1,4 @@
-module github.com/moritzbierling/beats
+module github.com/bierlingm/beats
 
 go 1.25.4
 
