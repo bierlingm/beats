@@ -1,6 +1,6 @@
 module github.com/bierlingm/beats
 
-go 1.25.4
+go 1.24.0
 
 require modernc.org/sqlite v1.40.1
 
