@@ -21,11 +21,18 @@ A beat is a minimally structured narrative unit—an insight from a coaching ses
 
 ## Installation
 
+**One-liner (macOS/Linux):**
 ```bash
-# From source
-go install github.com/bierlingm/beats/cmd/beats@latest
+curl -sL https://raw.githubusercontent.com/bierlingm/beats/main/install.sh | sh
+```
 
-# Or clone and build
+**With Go:**
+```bash
+go install github.com/bierlingm/beats/cmd/beats@latest
+```
+
+**From source:**
+```bash
 git clone https://github.com/bierlingm/beats
 cd beats && go build -o beats ./cmd/beats
 ```
