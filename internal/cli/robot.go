@@ -65,13 +65,16 @@ func (c *RobotCLI) Help() error {
 			},
 			{
 				"name":        "--robot-search",
-				"description": "Search beats by keyword/semantic query",
+				"description": "Search beats by keyword or semantic query",
 				"input": map[string]interface{}{
 					"query":       "string (required) - search query",
 					"max_results": "int (optional, default 20)",
+					"semantic":    "bool (optional, default false) - use osgrep semantic search instead of keyword FTS5",
 				},
 				"output": map[string]interface{}{
-					"results": "array of {id, score, content, impetus}",
+					"results":  "array of {id, score, content, impetus}",
+					"mode":     "string - 'keyword' or 'semantic'",
+					"fallback": "bool - true if semantic was requested but fell back to keyword",
 				},
 			},
 			{
@@ -333,14 +336,18 @@ func (c *RobotCLI) CommitBeat(input io.Reader) error {
 type SearchInput struct {
 	Query      string `json:"query"`
 	MaxResults int    `json:"max_results,omitempty"`
+	Semantic   bool   `json:"semantic,omitempty"`
 }
 
 // SearchOutput is the output for --robot-search.
 type SearchOutput struct {
-	Results []beat.SearchResult `json:"results"`
+	Results  []beat.SearchResult `json:"results"`
+	Mode     string              `json:"mode,omitempty"`
+	Fallback bool                `json:"fallback,omitempty"`
 }
 
 // Search performs a search and returns JSON results.
+// When semantic=true, uses osgrep for semantic/embedding-based search.
 func (c *RobotCLI) Search(input io.Reader) error {
 	var in SearchInput
 	if err := json.NewDecoder(input).Decode(&in); err != nil {
@@ -356,12 +363,16 @@ func (c *RobotCLI) Search(input io.Reader) error {
 		maxResults = 20
 	}
 
-	results, err := c.store.Search(in.Query, maxResults)
+	output, err := store.HybridSearch(c.store, in.Query, maxResults, in.Semantic)
 	if err != nil {
 		return outputError("search failed", err)
 	}
 
-	return outputJSON(SearchOutput{Results: results})
+	return outputJSON(SearchOutput{
+		Results:  output.Results,
+		Mode:     output.Mode,
+		Fallback: output.Fallback,
+	})
 }
 
 // BriefInput is the input for --robot-brief.
