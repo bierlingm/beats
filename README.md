@@ -37,22 +37,72 @@ git clone https://github.com/bierlingm/beats
 cd beats && go build -o beats ./cmd/beats
 ```
 
+## What's New in v0.4
+
+### Smart Impetus Inference
+Beats auto-detect impetus from content patterns:
+- URLs → "Web discovery", "GitHub discovery", "X discovery"
+- Coaching patterns → "Coaching"
+- Session patterns → "Session"
+
+### Session Tagging
+Beats captured during Droid sessions are auto-tagged:
+```bash
+# Automatic when FACTORY_SESSION_ID is set
+bt add "insight"  # → session_id populated
+
+# Query by session
+bt search --session current
+bt search --session abc123
+```
+
+### Quick Capture Flags
+```bash
+bt add -w "https://..."       # Web + auto-extract title
+bt add -g "owner/repo"        # GitHub + fetch description
+bt add -x "https://x.com/..." # X/Twitter
+bt add -c "insight"           # Coaching impetus
+bt add -s "note"              # Session impetus + auto-tag
+```
+
+### Session-End Hooks
+```bash
+bt hooks session-end   # Create beat from current Factory session
+bt hooks configure     # Show hook configuration
+```
+
+### Semantic Search
+```bash
+bt embeddings compute  # Generate embeddings via Ollama
+bt embeddings status   # Check coverage
+bt search --semantic "concept or pattern"
+```
+
+### Shell Alias (Recommended)
+```bash
+alias ba='bt add'
+
+# Then:
+ba "quick insight"
+ba -w "https://cool-tool.dev"
+```
+
 ## Quick Start
 
 ```bash
 # Add a beat
-beats add "Insight from coaching: commitment is about identity, not discipline"
-beats add --impetus "Web discovery" "Found interesting tool at https://example.com"
+bt add "Insight from coaching: commitment is about identity, not discipline"
+bt add --impetus "Web discovery" "Found interesting tool at https://example.com"
 
 # List and view
-beats list
-beats show beat-20251211-001
+bt list
+bt show beat-20251211-001
 
 # Search
-beats search "coaching"
+bt search "coaching"
 
 # Link a beat to beads
-beats link beat-20251211-001 mb-abc mb-xyz
+bt link beat-20251211-001 mb-abc mb-xyz
 ```
 
 ## Commands

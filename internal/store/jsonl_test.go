@@ -183,3 +183,162 @@ func TestJSONLStore_CreatesDirectory(t *testing.T) {
 		t.Error("NewJSONLStore() did not create directory")
 	}
 }
+
+func TestFindBeatsDir_WalksUpTree(t *testing.T) {
+	// Create a temp directory structure:
+	// root/
+	//   .beats/           <- should find this (with beats.jsonl)
+	//   subdir/
+	//     nested/         <- start from here
+	root := t.TempDir()
+	beatsDir := filepath.Join(root, ".beats")
+	nestedDir := filepath.Join(root, "subdir", "nested")
+
+	if err := os.MkdirAll(beatsDir, 0755); err != nil {
+		t.Fatalf("Failed to create .beats dir: %v", err)
+	}
+	// Create a beats.jsonl to make it a valid .beats directory
+	if err := os.WriteFile(filepath.Join(beatsDir, "beats.jsonl"), []byte{}, 0644); err != nil {
+		t.Fatalf("Failed to create beats.jsonl: %v", err)
+	}
+	if err := os.MkdirAll(nestedDir, 0755); err != nil {
+		t.Fatalf("Failed to create nested dir: %v", err)
+	}
+
+	found := findBeatsDir(nestedDir)
+	if found != beatsDir {
+		t.Errorf("findBeatsDir() = %q, want %q", found, beatsDir)
+	}
+}
+
+func TestFindBeatsDir_UsesClosest(t *testing.T) {
+	// Create a temp directory structure:
+	// root/
+	//   .beats/           <- should NOT find this (valid but further)
+	//   subdir/
+	//     .beats/         <- should find this (closer, valid)
+	//     nested/         <- start from here
+	root := t.TempDir()
+	rootBeats := filepath.Join(root, ".beats")
+	subdirBeats := filepath.Join(root, "subdir", ".beats")
+	nestedDir := filepath.Join(root, "subdir", "nested")
+
+	if err := os.MkdirAll(rootBeats, 0755); err != nil {
+		t.Fatalf("Failed to create root .beats dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(rootBeats, "beats.jsonl"), []byte{}, 0644); err != nil {
+		t.Fatalf("Failed to create root beats.jsonl: %v", err)
+	}
+	if err := os.MkdirAll(subdirBeats, 0755); err != nil {
+		t.Fatalf("Failed to create subdir .beats dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(subdirBeats, "beats.jsonl"), []byte{}, 0644); err != nil {
+		t.Fatalf("Failed to create subdir beats.jsonl: %v", err)
+	}
+	if err := os.MkdirAll(nestedDir, 0755); err != nil {
+		t.Fatalf("Failed to create nested dir: %v", err)
+	}
+
+	found := findBeatsDir(nestedDir)
+	if found != subdirBeats {
+		t.Errorf("findBeatsDir() = %q, want %q (closest)", found, subdirBeats)
+	}
+}
+
+func TestFindBeatsDir_FallsBackToStart(t *testing.T) {
+	// Create a temp directory with no .beats anywhere
+	root := t.TempDir()
+	nestedDir := filepath.Join(root, "subdir", "nested")
+
+	if err := os.MkdirAll(nestedDir, 0755); err != nil {
+		t.Fatalf("Failed to create nested dir: %v", err)
+	}
+
+	found := findBeatsDir(nestedDir)
+	expected := filepath.Join(nestedDir, ".beats")
+	if found != expected {
+		t.Errorf("findBeatsDir() = %q, want %q (fallback)", found, expected)
+	}
+}
+
+func TestFindBeatsDir_SkipsEmptyBeatsDir(t *testing.T) {
+	// Create a temp directory structure:
+	// root/
+	//   .beats/beats.jsonl   <- should find this (valid)
+	//   subdir/
+	//     .beats/            <- should SKIP this (empty, no beats.jsonl)
+	//     nested/            <- start from here
+	root := t.TempDir()
+	rootBeats := filepath.Join(root, ".beats")
+	emptyBeats := filepath.Join(root, "subdir", ".beats")
+	nestedDir := filepath.Join(root, "subdir", "nested")
+
+	if err := os.MkdirAll(rootBeats, 0755); err != nil {
+		t.Fatalf("Failed to create root .beats dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(rootBeats, "beats.jsonl"), []byte{}, 0644); err != nil {
+		t.Fatalf("Failed to create root beats.jsonl: %v", err)
+	}
+	if err := os.MkdirAll(emptyBeats, 0755); err != nil {
+		t.Fatalf("Failed to create empty .beats dir: %v", err)
+	}
+	// Note: NOT creating beats.jsonl in emptyBeats
+	if err := os.MkdirAll(nestedDir, 0755); err != nil {
+		t.Fatalf("Failed to create nested dir: %v", err)
+	}
+
+	found := findBeatsDir(nestedDir)
+	if found != rootBeats {
+		t.Errorf("findBeatsDir() = %q, want %q (should skip empty .beats)", found, rootBeats)
+	}
+}
+
+func TestGetBeatsDir_RespectsEnvVar(t *testing.T) {
+	customDir := t.TempDir()
+
+	// Set env var
+	oldVal := os.Getenv(BeatsDirEnvVar)
+	os.Setenv(BeatsDirEnvVar, customDir)
+	defer os.Setenv(BeatsDirEnvVar, oldVal)
+
+	dir, err := GetBeatsDir()
+	if err != nil {
+		t.Fatalf("GetBeatsDir() error = %v", err)
+	}
+
+	if dir != customDir {
+		t.Errorf("GetBeatsDir() = %q, want %q (from env)", dir, customDir)
+	}
+}
+
+func TestGetBeatsDir_EnvVarTakesPrecedence(t *testing.T) {
+	// Create a .beats in cwd that should be ignored
+	root := t.TempDir()
+	beatsDir := filepath.Join(root, ".beats")
+	customDir := filepath.Join(root, "custom-beats")
+
+	if err := os.MkdirAll(beatsDir, 0755); err != nil {
+		t.Fatalf("Failed to create .beats dir: %v", err)
+	}
+	if err := os.MkdirAll(customDir, 0755); err != nil {
+		t.Fatalf("Failed to create custom dir: %v", err)
+	}
+
+	// Change to root and set env var
+	oldWd, _ := os.Getwd()
+	os.Chdir(root)
+	defer os.Chdir(oldWd)
+
+	oldVal := os.Getenv(BeatsDirEnvVar)
+	os.Setenv(BeatsDirEnvVar, customDir)
+	defer os.Setenv(BeatsDirEnvVar, oldVal)
+
+	dir, err := GetBeatsDir()
+	if err != nil {
+		t.Fatalf("GetBeatsDir() error = %v", err)
+	}
+
+	if dir != customDir {
+		t.Errorf("GetBeatsDir() = %q, want %q (env takes precedence)", dir, customDir)
+	}
+}

@@ -11,7 +11,7 @@ import (
 	"github.com/bierlingm/beats/internal/store"
 )
 
-const version = "0.2.0"
+const version = "0.4.0"
 
 func main() {
 	if err := run(); err != nil {
@@ -49,6 +49,18 @@ func run() error {
 	// Handle subcommands
 	cmd := args[0]
 	cmdArgs := args[1:]
+
+	// Handle prime command separately (no store needed initially)
+	if cmd == "prime" {
+		beatsDir := ""
+		for i, arg := range cmdArgs {
+			if arg == "--dir" && i+1 < len(cmdArgs) {
+				beatsDir = cmdArgs[i+1]
+				break
+			}
+		}
+		return handlePrimeCommand(beatsDir)
+	}
 
 	return handleHumanCommand(cmd, cmdArgs)
 }
@@ -103,6 +115,24 @@ func handleHumanCommand(cmd string, args []string) error {
 	beatsDir := fs.String("dir", "", "Beats directory")
 	impetusLabel := fs.String("impetus", "", "Impetus label for 'add' command")
 	maxResults := fs.Int("max", 20, "Maximum results for 'search' command")
+	force := fs.Bool("force", false, "Skip confirmation for delete")
+	targetDir := fs.String("to", "", "Target directory for move command")
+	searchAll := fs.Bool("all", false, "Search across all projects")
+	rootDir := fs.String("root", "", "Root directory for cross-project operations")
+	sessionFilter := fs.String("session", "", "Filter by session ID (use 'current' for FACTORY_SESSION_ID)")
+
+	// Quick capture flags
+	webURL := fs.String("web", "", "Capture from web URL")
+	webURLShort := fs.String("w", "", "Capture from web URL (short)")
+	githubRef := fs.String("github", "", "GitHub reference (owner/repo)")
+	githubRefShort := fs.String("g", "", "GitHub reference (short)")
+	twitterURL := fs.String("twitter", "", "X/Twitter URL")
+	twitterURLShort := fs.String("x", "", "X/Twitter URL (short)")
+	coaching := fs.Bool("coaching", false, "Mark as coaching insight")
+	coachingShort := fs.Bool("c", false, "Mark as coaching (short)")
+	sessionInsight := fs.Bool("session-insight", false, "Mark as session insight")
+	sessionInsightShort := fs.Bool("s", false, "Mark as session insight (short)")
+	searchSemantic := fs.Bool("semantic", false, "Use semantic search")
 
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -118,14 +148,40 @@ func handleHumanCommand(cmd string, args []string) error {
 
 	switch cmd {
 	case "add":
-		if len(cmdArgs) == 0 {
-			return fmt.Errorf("add requires content argument")
+		// Resolve short flags
+		web := *webURL
+		if web == "" {
+			web = *webURLShort
 		}
+		github := *githubRef
+		if github == "" {
+			github = *githubRefShort
+		}
+		twitter := *twitterURL
+		if twitter == "" {
+			twitter = *twitterURLShort
+		}
+		isCoaching := *coaching || *coachingShort
+		isSession := *sessionInsight || *sessionInsightShort
+
+		// Content is optional when using capture flags
 		content := strings.Join(cmdArgs, " ")
-		return humanCLI.Add(content, *impetusLabel)
+		if web == "" && github == "" && twitter == "" && content == "" {
+			return fmt.Errorf("add requires content argument or capture flag (-w, -g, -x)")
+		}
+
+		return humanCLI.AddWithOptions(cli.AddOptions{
+			Content:      content,
+			ImpetusLabel: *impetusLabel,
+			WebURL:       web,
+			GitHubRef:    github,
+			TwitterURL:   twitter,
+			Coaching:     isCoaching,
+			Session:      isSession,
+		})
 
 	case "list":
-		return humanCLI.List()
+		return humanCLI.List(*sessionFilter)
 
 	case "show":
 		if len(cmdArgs) == 0 {
@@ -138,7 +194,24 @@ func handleHumanCommand(cmd string, args []string) error {
 			return fmt.Errorf("search requires query argument")
 		}
 		query := strings.Join(cmdArgs, " ")
-		return humanCLI.Search(query, *maxResults)
+		if *searchSemantic {
+			return humanCLI.SemanticSearch(query, *maxResults)
+		}
+		if *searchAll {
+			root := *rootDir
+			if root == "" {
+				root = cli.GetDefaultRoot()
+			}
+			return humanCLI.SearchAll(root, query, *maxResults)
+		}
+		return humanCLI.Search(query, *maxResults, *sessionFilter)
+
+	case "projects":
+		root := *rootDir
+		if root == "" {
+			root = cli.GetDefaultRoot()
+		}
+		return humanCLI.ListProjects(root)
 
 	case "link":
 		if len(cmdArgs) < 2 {
@@ -148,8 +221,42 @@ func handleHumanCommand(cmd string, args []string) error {
 		beadIDs := cmdArgs[1:]
 		return humanCLI.Link(beatID, beadIDs)
 
+	case "delete", "rm":
+		if len(cmdArgs) == 0 {
+			return fmt.Errorf("delete requires beat ID argument")
+		}
+		return humanCLI.Delete(cmdArgs[0], *force)
+
+	case "move", "mv":
+		if len(cmdArgs) == 0 {
+			return fmt.Errorf("move requires beat ID argument")
+		}
+		if *targetDir == "" {
+			return fmt.Errorf("move requires --to <directory> flag")
+		}
+		return humanCLI.Move(cmdArgs[0], *targetDir)
+
 	case "hooks":
 		return handleHooksCommand(jsonStore.Dir(), cmdArgs)
+
+	case "where":
+		// Show which .beats directory is being used
+		fmt.Printf("Beats directory: %s\n", jsonStore.Dir())
+		fmt.Printf("Beats file: %s\n", jsonStore.Path())
+		return nil
+
+	case "embeddings":
+		if len(cmdArgs) == 0 {
+			return fmt.Errorf("embeddings requires subcommand: compute, status")
+		}
+		switch cmdArgs[0] {
+		case "compute":
+			return humanCLI.EmbeddingsCompute()
+		case "status":
+			return humanCLI.EmbeddingsStatus()
+		default:
+			return fmt.Errorf("unknown embeddings subcommand: %s", cmdArgs[0])
+		}
 
 	default:
 		return fmt.Errorf("unknown command: %s", cmd)
@@ -158,7 +265,7 @@ func handleHumanCommand(cmd string, args []string) error {
 
 func handleHooksCommand(beatsDir string, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("hooks requires a subcommand: init, status, clear")
+		return fmt.Errorf("hooks requires a subcommand: init, status, clear, session-end, configure")
 	}
 
 	subcmd := args[0]
@@ -191,20 +298,35 @@ func handleHooksCommand(beatsDir string, args []string) error {
 		fmt.Println("Synthesis request cleared.")
 		return nil
 
+	case "session-end":
+		config := hooks.GetSessionEndConfig(beatsDir)
+		runner := hooks.NewSessionEndRunner(beatsDir, config)
+		return runner.Run()
+
+	case "configure":
+		return hooks.ShowConfig(beatsDir)
+
 	default:
-		return fmt.Errorf("unknown hooks subcommand: %s (use: init, status, clear)", subcmd)
+		return fmt.Errorf("unknown hooks subcommand: %s (use: init, status, clear, session-end, configure)", subcmd)
 	}
 }
 
 func printUsage() {
 	fmt.Printf(`beats v%s - Narrative substrate for beads
+Also available as 'bt' for short.
 
 USAGE:
-  beats [command] [arguments]
+  bt [command] [arguments]
 
 HUMAN COMMANDS:
+  prime                  Output context for AI session injection
   add "content"          Add a new beat with the given content
     --impetus "label"    Optional impetus label
+    -w, --web URL        Capture from web URL with title extraction
+    -g, --github ref     Capture GitHub repo (owner/repo)
+    -x, --twitter URL    Capture X/Twitter link
+    -c, --coaching       Mark as coaching insight
+    -s, --session-insight Mark as session insight
 
   list                   List all beats
 
@@ -212,8 +334,21 @@ HUMAN COMMANDS:
 
   search "query"         Search beats by content/impetus
     --max N              Maximum results (default 20)
+    --all                Search across all projects
+    --root <path>        Root directory for --all (default: ~/werk or BEATS_ROOT)
+
+  projects               List all beats projects
+    --root <path>        Root directory to scan (default: ~/werk or BEATS_ROOT)
 
   link <beat-id> <bead-id>...  Link a beat to one or more beads
+
+  delete <beat-id>       Delete a beat (alias: rm)
+    --force              Skip confirmation prompt
+
+  move <beat-id>         Move a beat to another project (alias: mv)
+    --to <directory>     Target .beats directory
+
+  where                  Show which .beats directory is being used
 
   hooks init             Initialize hooks config (enables synthesis triggers)
   hooks status           Check if synthesis is pending
@@ -233,27 +368,45 @@ ROBOT COMMANDS (JSON in/out via stdin/stdout):
   --robot-synthesis-clear        Clear synthesis request
 
 OPTIONS:
-  --dir <path>           Beats directory (default: .beats)
+  --dir <path>           Beats directory (default: auto-discover .beats)
   --version              Show version
   --help                 Show this help
 
+DIRECTORY RESOLUTION:
+  bt walks up from the current directory to find the nearest .beats folder
+  (like git finds .git). Set BEATS_DIR environment variable to override.
+
 EXAMPLES:
   # Add a beat
-  beats add "Insight from coaching: commitment is about identity, not discipline"
-  beats add --impetus "Research on AI" "Web finding about AI agents"
+  bt add "Insight from coaching: commitment is about identity, not discipline"
+  bt add --impetus "Research on AI" "Web finding about AI agents"
 
   # List and show
-  beats list
-  beats show beat-20251204-001
+  bt list
+  bt show beat-20251204-001
 
   # Search
-  beats search "coaching"
-  beats search --max 5 "commitment"
+  bt search "coaching"
+  bt search --max 5 "commitment"
+
+  # Cross-project search
+  bt search --all "deployment"
+  bt projects
+
+  # Delete a beat
+  bt delete beat-20251204-001
+  bt rm --force beat-20251204-001
+
+  # Move beat to another project
+  bt move beat-20251204-001 --to /path/to/other/project/.beats
+
+  # See which .beats is being used
+  bt where
 
   # Robot usage (for AI agents)
-  echo '{"raw_text":"coaching notes..."}' | beats --robot-propose-beat
-  echo '{"content":"...","impetus":{"label":"..."}}' | beats --robot-commit-beat
-  echo '{"query":"coaching"}' | beats --robot-search
+  echo '{"raw_text":"coaching notes..."}' | bt --robot-propose-beat
+  echo '{"content":"...","impetus":{"label":"..."}}' | bt --robot-commit-beat
+  echo '{"query":"coaching"}' | bt --robot-search
 
 `, version)
 }

@@ -18,6 +18,7 @@ type Beat struct {
 	References  []Reference `json:"references,omitempty"`
 	Entities    []Entity    `json:"entities,omitempty"`
 	LinkedBeads []string    `json:"linked_beads,omitempty"`
+	SessionID   string      `json:"session_id,omitempty"`
 }
 
 // Impetus captures the origin/motivation for recording a beat.

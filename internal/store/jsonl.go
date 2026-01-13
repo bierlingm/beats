@@ -19,6 +19,7 @@ import (
 const (
 	DefaultBeatsDir  = ".beats"
 	DefaultBeatsFile = "beats.jsonl"
+	BeatsDirEnvVar   = "BEATS_DIR"
 )
 
 // JSONLStore manages beats in an append-only JSONL file.
@@ -28,15 +29,149 @@ type JSONLStore struct {
 	mu       sync.RWMutex
 }
 
+// isValidBeatsDir checks if a directory is a valid .beats directory.
+// A valid .beats directory must exist and either:
+// - contain a beats.jsonl file, OR
+// - contain a hooks.json file (initialized but empty)
+func isValidBeatsDir(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil || !info.IsDir() {
+		return false
+	}
+	// Check for beats.jsonl (has data)
+	if _, err := os.Stat(filepath.Join(path, DefaultBeatsFile)); err == nil {
+		return true
+	}
+	// Check for hooks.json (initialized project)
+	if _, err := os.Stat(filepath.Join(path, "hooks.json")); err == nil {
+		return true
+	}
+	return false
+}
+
+// findBeatsDir walks up from startDir to find an existing .beats directory.
+// Only considers directories with actual beats data (beats.jsonl or hooks.json).
+// Returns the first valid .beats found, or startDir/.beats if none exists.
+func findBeatsDir(startDir string) string {
+	dir := startDir
+	for {
+		candidate := filepath.Join(dir, DefaultBeatsDir)
+		if isValidBeatsDir(candidate) {
+			return candidate
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			// Reached filesystem root, use startDir
+			return filepath.Join(startDir, DefaultBeatsDir)
+		}
+		dir = parent
+	}
+}
+
+// GetBeatsDir returns the beats directory path with the following precedence:
+// 1. BEATS_DIR environment variable (if set)
+// 2. Walk up from cwd to find existing .beats directory
+// 3. Fall back to cwd/.beats (will be created)
+func GetBeatsDir() (string, error) {
+	// Check BEATS_DIR environment variable first
+	if envDir := os.Getenv(BeatsDirEnvVar); envDir != "" {
+		return envDir, nil
+	}
+
+	// Walk up from cwd to find existing .beats
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("failed to get working directory: %w", err)
+	}
+
+	return findBeatsDir(cwd), nil
+}
+
+// DiscoverBeatsProjects finds all valid .beats directories under the given root.
+// Skips hidden directories (except .beats itself) and common non-project dirs.
+func DiscoverBeatsProjects(root string) ([]string, error) {
+	var projects []string
+	skipDirs := map[string]bool{
+		"node_modules": true,
+		".git":         true,
+		"vendor":       true,
+		"__pycache__":  true,
+		".cache":       true,
+		".npm":         true,
+		".cargo":       true,
+	}
+
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil // Skip directories we can't read
+		}
+		if !d.IsDir() {
+			return nil
+		}
+
+		name := d.Name()
+
+		// Skip hidden directories (except when we find .beats)
+		if strings.HasPrefix(name, ".") && name != DefaultBeatsDir {
+			return filepath.SkipDir
+		}
+
+		// Skip common non-project directories
+		if skipDirs[name] {
+			return filepath.SkipDir
+		}
+
+		// Check if this is a valid .beats directory
+		if name == DefaultBeatsDir && isValidBeatsDir(path) {
+			projects = append(projects, path)
+			return filepath.SkipDir // Don't descend into .beats
+		}
+
+		return nil
+	})
+
+	return projects, err
+}
+
+// ProjectInfo contains metadata about a beats project.
+type ProjectInfo struct {
+	BeatsDir    string
+	ProjectName string
+	BeatCount   int
+}
+
+// GetProjectInfo returns info about a .beats directory.
+func GetProjectInfo(beatsDir string) (*ProjectInfo, error) {
+	store, err := NewJSONLStore(beatsDir)
+	if err != nil {
+		return nil, err
+	}
+
+	beats, err := store.ReadAll()
+	if err != nil {
+		return nil, err
+	}
+
+	// Extract project name from path (parent directory name)
+	projectName := filepath.Base(filepath.Dir(beatsDir))
+
+	return &ProjectInfo{
+		BeatsDir:    beatsDir,
+		ProjectName: projectName,
+		BeatCount:   len(beats),
+	}, nil
+}
+
 // NewJSONLStore creates a new JSONL store.
-// If dir is empty, uses the current directory's .beats folder.
+// If dir is empty, uses GetBeatsDir() to find or create the beats directory.
+// This walks up from cwd to find an existing .beats folder (like git finds .git).
 func NewJSONLStore(dir string) (*JSONLStore, error) {
 	if dir == "" {
-		cwd, err := os.Getwd()
+		var err error
+		dir, err = GetBeatsDir()
 		if err != nil {
-			return nil, fmt.Errorf("failed to get working directory: %w", err)
+			return nil, err
 		}
-		dir = filepath.Join(cwd, DefaultBeatsDir)
 	}
 
 	if err := os.MkdirAll(dir, 0755); err != nil {
@@ -327,6 +462,33 @@ func (s *JSONLStore) Update(id string, updater func(*beat.Beat) error) (*beat.Be
 	}
 
 	return updated, nil
+}
+
+// Delete removes a beat by ID.
+func (s *JSONLStore) Delete(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	beats, err := s.readAllUnlocked()
+	if err != nil {
+		return err
+	}
+
+	found := false
+	filtered := make([]beat.Beat, 0, len(beats)-1)
+	for _, b := range beats {
+		if b.ID == id {
+			found = true
+			continue
+		}
+		filtered = append(filtered, b)
+	}
+
+	if !found {
+		return fmt.Errorf("beat not found: %s", id)
+	}
+
+	return s.rewriteUnlocked(filtered)
 }
 
 // rewriteUnlocked rewrites the JSONL file with the given beats.
