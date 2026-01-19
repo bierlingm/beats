@@ -16,8 +16,8 @@ import (
 )
 
 const (
-	defaultOllamaURL   = "http://localhost:11434"
-	defaultEmbedModel  = "embeddinggemma"
+	defaultOllamaURL    = "http://localhost:11434"
+	defaultEmbedModel   = "embeddinggemma"
 	embeddingsCacheFile = "embeddings_cache.json"
 )
 
@@ -56,7 +56,7 @@ func (s *SemanticSearcher) Available() bool {
 	if err != nil {
 		return false
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	return resp.StatusCode == 200
 }
 
@@ -65,12 +65,12 @@ func (s *SemanticSearcher) loadCache() {
 	if err != nil {
 		return
 	}
-	json.Unmarshal(data, &s.cache)
+	_ = json.Unmarshal(data, &s.cache)
 }
 
 func (s *SemanticSearcher) saveCache() {
 	data, _ := json.Marshal(s.cache)
-	os.WriteFile(filepath.Join(s.cacheDir, embeddingsCacheFile), data, 0644)
+	_ = os.WriteFile(filepath.Join(s.cacheDir, embeddingsCacheFile), data, 0644)
 }
 
 // getEmbedding fetches embedding from Ollama or cache.
@@ -91,7 +91,7 @@ func (s *SemanticSearcher) getEmbedding(text string) ([]float64, error) {
 	if err != nil {
 		return nil, fmt.Errorf("ollama request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != 200 {
 		return nil, fmt.Errorf("ollama returned status %d", resp.StatusCode)
@@ -265,7 +265,7 @@ func SemanticStatus() map[string]interface{} {
 	resp, err := client.Get(defaultOllamaURL + "/api/tags")
 	available := err == nil && resp != nil && resp.StatusCode == 200
 	if resp != nil {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 	}
 
 	return map[string]interface{}{
@@ -274,13 +274,6 @@ func SemanticStatus() map[string]interface{} {
 		"model":        defaultEmbedModel,
 		"capabilities": []string{"semantic_search", "embedding_similarity"},
 	}
-}
-
-func truncate(s string, max int) string {
-	if len(s) <= max {
-		return s
-	}
-	return s[:max] + "..."
 }
 
 func SemanticStatusJSON() ([]byte, error) {

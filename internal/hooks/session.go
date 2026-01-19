@@ -143,10 +143,7 @@ func (r *SessionEndRunner) findCurrentSession() (*FactorySession, error) {
 
 	// Get CWD-specific session directory
 	cwd, _ := os.Getwd()
-	cwdEncoded := strings.ReplaceAll(cwd, "/", "-")
-	if strings.HasPrefix(cwdEncoded, "-") {
-		cwdEncoded = cwdEncoded[1:]
-	}
+	cwdEncoded := strings.TrimPrefix(strings.ReplaceAll(cwd, "/", "-"), "-")
 	sessionDir := filepath.Join(sessionsDir, cwdEncoded)
 
 	if _, err := os.Stat(sessionDir); os.IsNotExist(err) {
@@ -206,7 +203,7 @@ func (r *SessionEndRunner) parseSession(path string) (*FactorySession, error) {
 			var meta struct {
 				Title string `json:"title"`
 			}
-			json.Unmarshal(line, &meta)
+			_ = json.Unmarshal(line, &meta)
 			session.Title = meta.Title
 			isFirst = false
 		}
@@ -284,7 +281,7 @@ func (r *SessionEndRunner) generateSummary(content string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("ollama request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("ollama returned status %d", resp.StatusCode)
@@ -320,36 +317,36 @@ func (r *SessionEndRunner) isProcessed(sessionID string) bool {
 
 func (r *SessionEndRunner) markProcessed(sessionID string) {
 	dir := filepath.Dir(r.config.ProcessedFile)
-	os.MkdirAll(dir, 0755)
+	_ = os.MkdirAll(dir, 0755)
 
 	f, err := os.OpenFile(r.config.ProcessedFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		return
 	}
 	defer f.Close()
-	f.WriteString(sessionID + "\n")
+	_, _ = f.WriteString(sessionID + "\n")
 }
 
 // appendBeat writes a beat directly to the JSONL file (avoids import cycle with store)
 func (r *SessionEndRunner) appendBeat(b *beat.Beat) error {
 	beatsFile := filepath.Join(r.beatsDir, "beats.jsonl")
-	
+
 	// Ensure directory exists
 	if err := os.MkdirAll(r.beatsDir, 0755); err != nil {
 		return err
 	}
-	
+
 	f, err := os.OpenFile(beatsFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-	
+
 	data, err := json.Marshal(b)
 	if err != nil {
 		return err
 	}
-	
+
 	_, err = f.Write(append(data, '\n'))
 	return err
 }

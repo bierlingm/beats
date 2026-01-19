@@ -9,8 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bierlingm/beats/internal/beat"
 	_ "modernc.org/sqlite"
+
+	"github.com/bierlingm/beats/internal/beat"
 )
 
 const DefaultDBFile = "beats.db"

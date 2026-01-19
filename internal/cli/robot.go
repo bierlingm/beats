@@ -709,6 +709,199 @@ func (c *RobotCLI) SynthesisClear() error {
 	})
 }
 
+// ContextInput is the input for --robot-context.
+type ContextInput struct {
+	Path string `json:"path"`
+}
+
+// ContextBeatOutput represents a beat in context output.
+type ContextBeatOutput struct {
+	ID          string    `json:"id"`
+	CreatedAt   time.Time `json:"created_at"`
+	AgeDays     int       `json:"age_days"`
+	Preview     string    `json:"preview"`
+	Impetus     string    `json:"impetus"`
+	FullContent string    `json:"full_content"`
+}
+
+// ContextCooperatorBeat represents a cooperator-related beat.
+type ContextCooperatorBeat struct {
+	ID                    string    `json:"id"`
+	AgeDays               int       `json:"age_days"`
+	Preview               string    `json:"preview"`
+	Cooperator            string    `json:"cooperator"`
+	CooperatorTemperature float64   `json:"cooperator_temperature,omitempty"`
+	CreatedAt             time.Time `json:"created_at"`
+	FullContent           string    `json:"full_content"`
+}
+
+// ContextOutput is the output for --robot-context.
+type ContextOutput struct {
+	ContextPath   string             `json:"context_path"`
+	WALDDirectory *WALDDirectoryInfo `json:"wald_directory,omitempty"`
+	Temperature   float64            `json:"temperature,omitempty"`
+	State         string             `json:"state,omitempty"`
+	Trend         string             `json:"trend,omitempty"`
+	Beats         *ContextBeats      `json:"beats"`
+	TotalBeats    int                `json:"total_beats"`
+	ShownBeats    int                `json:"shown_beats"`
+	ApertureNote  string             `json:"aperture_note"`
+}
+
+// WALDDirectoryInfo contains WALD directory metadata.
+type WALDDirectoryInfo struct {
+	Path    string `json:"path"`
+	Purpose string `json:"purpose,omitempty"`
+	Gravity string `json:"gravity,omitempty"`
+	Entry   string `json:"entry,omitempty"`
+}
+
+// ContextBeats contains categorized beats.
+type ContextBeats struct {
+	Direct            []ContextBeatOutput     `json:"direct"`
+	CooperatorRelated []ContextCooperatorBeat `json:"cooperator_related"`
+}
+
+// Context returns context for a WALD directory as JSON.
+func (c *RobotCLI) Context(input io.Reader) error {
+	var in ContextInput
+	if err := json.NewDecoder(input).Decode(&in); err != nil {
+		return outputError("invalid input JSON", err)
+	}
+
+	path := in.Path
+	if path == "" {
+		return outputError("path is required", nil)
+	}
+
+	// Resolve to WALD path
+	waldPath, werkRoot := resolveToWALDPath(path)
+	if werkRoot == "" {
+		return outputError("not in a WALD workspace (no WALD.yaml found)", nil)
+	}
+
+	// Load all beats
+	beats, err := c.store.ReadAll()
+	if err != nil {
+		return outputError("failed to read beats", err)
+	}
+
+	// Find direct beats (matching wald_directory)
+	var directBeats []beat.Beat
+	for _, b := range beats {
+		if b.Context != nil && b.Context.WALDDirectory != "" {
+			if b.Context.WALDDirectory == waldPath || strings.HasPrefix(b.Context.WALDDirectory, waldPath+"/") {
+				directBeats = append(directBeats, b)
+			}
+		}
+	}
+
+	// Sort by recency
+	sortBeatsByRecency(directBeats)
+
+	// Collect cooperator mentions from direct beats
+	cooperatorMentions := make(map[string]bool)
+	for _, b := range directBeats {
+		for _, ent := range b.Entities {
+			if ent.Category == "cooperator" || strings.HasPrefix(ent.Label, "cooperators/") {
+				cooperatorMentions[ent.Label] = true
+			}
+		}
+		if strings.Contains(b.Content, "cooperators/") {
+			words := strings.Fields(b.Content)
+			for _, w := range words {
+				if strings.Contains(w, "cooperators/") {
+					idx := strings.Index(w, "cooperators/")
+					end := idx + len("cooperators/")
+					for end < len(w) && (w[end] >= 'a' && w[end] <= 'z' || w[end] >= 'A' && w[end] <= 'Z' || w[end] == '-' || w[end] == '_') {
+						end++
+					}
+					if end > idx+len("cooperators/") {
+						cooperatorMentions[w[idx:end]] = true
+					}
+				}
+			}
+		}
+	}
+
+	// Find cooperator-related beats
+	var cooperatorBeats []beat.Beat
+	cooperatorForBeat := make(map[string]string)
+	directIDs := make(map[string]bool)
+	for _, b := range directBeats {
+		directIDs[b.ID] = true
+	}
+
+	for _, b := range beats {
+		if directIDs[b.ID] {
+			continue
+		}
+		for coop := range cooperatorMentions {
+			if strings.Contains(b.Content, coop) {
+				cooperatorBeats = append(cooperatorBeats, b)
+				cooperatorForBeat[b.ID] = coop
+				break
+			}
+		}
+	}
+	sortBeatsByRecency(cooperatorBeats)
+
+	now := time.Now()
+
+	// Build direct beats output
+	directOutput := make([]ContextBeatOutput, 0, len(directBeats))
+	for _, b := range directBeats {
+		directOutput = append(directOutput, ContextBeatOutput{
+			ID:          b.ID,
+			CreatedAt:   b.CreatedAt,
+			AgeDays:     int(now.Sub(b.CreatedAt).Hours() / 24),
+			Preview:     truncate(b.Content, 80),
+			Impetus:     b.Impetus.Label,
+			FullContent: b.Content,
+		})
+	}
+
+	// Build cooperator beats output
+	cooperatorOutput := make([]ContextCooperatorBeat, 0, len(cooperatorBeats))
+	for _, b := range cooperatorBeats {
+		cooperatorOutput = append(cooperatorOutput, ContextCooperatorBeat{
+			ID:          b.ID,
+			AgeDays:     int(now.Sub(b.CreatedAt).Hours() / 24),
+			Preview:     truncate(b.Content, 80),
+			Cooperator:  cooperatorForBeat[b.ID],
+			CreatedAt:   b.CreatedAt,
+			FullContent: b.Content,
+		})
+	}
+
+	output := ContextOutput{
+		ContextPath: waldPath,
+		WALDDirectory: &WALDDirectoryInfo{
+			Path: waldPath,
+		},
+		Beats: &ContextBeats{
+			Direct:            directOutput,
+			CooperatorRelated: cooperatorOutput,
+		},
+		TotalBeats:   len(directBeats) + len(cooperatorBeats),
+		ShownBeats:   len(directOutput) + len(cooperatorOutput),
+		ApertureNote: "Shows articulable noticing only",
+	}
+
+	return outputJSON(output)
+}
+
+// sortBeatsByRecency sorts beats by creation time (newest first).
+func sortBeatsByRecency(beats []beat.Beat) {
+	for i := 0; i < len(beats)-1; i++ {
+		for j := i + 1; j < len(beats); j++ {
+			if beats[j].CreatedAt.After(beats[i].CreatedAt) {
+				beats[i], beats[j] = beats[j], beats[i]
+			}
+		}
+	}
+}
+
 func outputJSON(v interface{}) error {
 	enc := json.NewEncoder(jsonOutput)
 	enc.SetIndent("", "  ")

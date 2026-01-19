@@ -143,7 +143,7 @@ func (s *Store) Get(beatID string) ([]float64, error) {
 	return embedding, nil
 }
 
-func (s *Store) Count() int  { return len(s.index) }
+func (s *Store) Count() int { return len(s.index) }
 func (s *Store) Coverage(total int) float64 {
 	if total == 0 {
 		return 100.0
@@ -172,7 +172,7 @@ func (c *OllamaClient) IsAvailable() bool {
 	if err != nil {
 		return false
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	return resp.StatusCode == http.StatusOK
 }
 
@@ -184,7 +184,7 @@ func (c *OllamaClient) GetEmbedding(ctx context.Context, text string) ([]float64
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("ollama returned %d", resp.StatusCode)
 	}
@@ -234,10 +234,10 @@ func ComputeMissing(ctx context.Context, beats []beat.Beat, store *Store, ollama
 
 // SearchResult for semantic search
 type SearchResult struct {
-	ID         string
-	Score      float64
-	Content    string
-	Impetus    beat.Impetus
+	ID      string
+	Score   float64
+	Content string
+	Impetus beat.Impetus
 }
 
 func SemanticSearch(ctx context.Context, query string, beats []beat.Beat, store *Store, ollama *OllamaClient, limit int) ([]SearchResult, error) {

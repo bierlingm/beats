@@ -19,6 +19,16 @@ type Beat struct {
 	Entities    []Entity    `json:"entities,omitempty"`
 	LinkedBeads []string    `json:"linked_beads,omitempty"`
 	SessionID   string      `json:"session_id,omitempty"`
+	Context     *Context    `json:"context,omitempty"`
+}
+
+// Context captures the WALD directory context where the beat was captured.
+// Used by Thermal WALD for beat-to-directory matching.
+type Context struct {
+	CapturePath     string  `json:"capture_path"`               // Absolute path where beat was captured (pwd)
+	WALDDirectory   string  `json:"wald_directory,omitempty"`   // Resolved WALD directory path (relative to werk root)
+	InferenceMethod string  `json:"inference_method,omitempty"` // How context was determined: capture_location, session_workspace, semantic, manual
+	Confidence      float64 `json:"confidence,omitempty"`       // Confidence score 0-1
 }
 
 // Impetus captures the origin/motivation for recording a beat.

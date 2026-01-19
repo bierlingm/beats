@@ -104,6 +104,8 @@ func handleRobotCommand(cmd string, args []string) error {
 		return robotCLI.SynthesisStatus()
 	case "--robot-synthesis-clear":
 		return robotCLI.SynthesisClear()
+	case "--robot-context":
+		return robotCLI.Context(os.Stdin)
 	default:
 		return fmt.Errorf("unknown robot command: %s", cmd)
 	}
@@ -120,6 +122,8 @@ func handleHumanCommand(cmd string, args []string) error {
 	searchAll := fs.Bool("all", false, "Search across all projects")
 	rootDir := fs.String("root", "", "Root directory for cross-project operations")
 	sessionFilter := fs.String("session", "", "Filter by session ID (use 'current' for FACTORY_SESSION_ID)")
+	dryRun := fs.Bool("dry-run", false, "Show what would be done without making changes")
+	limit := fs.Int("limit", 10, "Maximum results per category for context command")
 
 	// Quick capture flags
 	webURL := fs.String("web", "", "Capture from web URL")
@@ -133,6 +137,9 @@ func handleHumanCommand(cmd string, args []string) error {
 	sessionInsight := fs.Bool("session-insight", false, "Mark as session insight")
 	sessionInsightShort := fs.Bool("s", false, "Mark as session insight (short)")
 	searchSemantic := fs.Bool("semantic", false, "Use semantic search")
+	robotOutput := fs.Bool("robot", false, "Output JSON (for context command)")
+	consolidate := fs.Bool("consolidate", false, "Consolidate scattered .beats/ into global store")
+	cleanup := fs.Bool("cleanup", false, "Remove old .beats/ directories after migration verification")
 
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -257,6 +264,25 @@ func handleHumanCommand(cmd string, args []string) error {
 		default:
 			return fmt.Errorf("unknown embeddings subcommand: %s", cmdArgs[0])
 		}
+
+	case "backfill-context":
+		return humanCLI.BackfillContext(*dryRun)
+
+	case "migrate":
+		if !*consolidate && !*cleanup {
+			return fmt.Errorf("migrate requires --consolidate or --cleanup flag")
+		}
+		if *cleanup {
+			return humanCLI.MigrateCleanup(cli.MigrateOptions{DryRun: *dryRun, Force: *force, Cleanup: true})
+		}
+		return humanCLI.MigrateConsolidate(cli.MigrateOptions{DryRun: *dryRun})
+
+	case "context":
+		path := ""
+		if len(cmdArgs) > 0 {
+			path = cmdArgs[0]
+		}
+		return humanCLI.ContextWithOptions(path, *limit, *robotOutput)
 
 	default:
 		return fmt.Errorf("unknown command: %s", cmd)

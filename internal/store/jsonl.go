@@ -20,6 +20,9 @@ const (
 	DefaultBeatsDir  = ".beats"
 	DefaultBeatsFile = "beats.jsonl"
 	BeatsDirEnvVar   = "BEATS_DIR"
+	// GlobalBeatsStore is the canonical single store for all beats in werk.
+	// This replaces the scattered per-directory .beats/ stores.
+	GlobalBeatsStore = "/Users/moritzbierling/werk/.beats"
 )
 
 // JSONLStore manages beats in an append-only JSONL file.
@@ -70,21 +73,15 @@ func findBeatsDir(startDir string) string {
 
 // GetBeatsDir returns the beats directory path with the following precedence:
 // 1. BEATS_DIR environment variable (if set)
-// 2. Walk up from cwd to find existing .beats directory
-// 3. Fall back to cwd/.beats (will be created)
+// 2. Global beats store at ~/werk/.beats/ (canonical single store)
 func GetBeatsDir() (string, error) {
 	// Check BEATS_DIR environment variable first
 	if envDir := os.Getenv(BeatsDirEnvVar); envDir != "" {
 		return envDir, nil
 	}
 
-	// Walk up from cwd to find existing .beats
-	cwd, err := os.Getwd()
-	if err != nil {
-		return "", fmt.Errorf("failed to get working directory: %w", err)
-	}
-
-	return findBeatsDir(cwd), nil
+	// Use the global beats store - all beats go to one place
+	return GlobalBeatsStore, nil
 }
 
 // DiscoverBeatsProjects finds all valid .beats directories under the given root.

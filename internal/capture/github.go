@@ -39,7 +39,7 @@ func CaptureFromGitHub(ref string, additionalContent string) (*GitHubCapture, er
 			Content: fmt.Sprintf("%s/%s\n\nhttps://github.com/%s/%s", owner, repo, owner, repo),
 		}, nil
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return &GitHubCapture{
