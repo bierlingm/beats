@@ -1,9 +1,11 @@
 package cli
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -39,6 +41,7 @@ type AddOptions struct {
 	TwitterURL   string
 	Coaching     bool
 	Session      bool
+	Date         *time.Time
 }
 
 // Add creates a new beat with the given content.
@@ -132,7 +135,13 @@ func (c *HumanCLI) AddWithOptions(opts AddOptions) error {
 		finalImpetus = "Session insight"
 	}
 
-	seq, err := c.store.NextSequence()
+	// Determine the creation time
+	createdAt := time.Now().UTC()
+	if opts.Date != nil {
+		createdAt = opts.Date.UTC()
+	}
+
+	seq, err := c.store.NextSequenceForDate(createdAt)
 	if err != nil {
 		return fmt.Errorf("failed to get sequence: %w", err)
 	}
@@ -152,8 +161,8 @@ func (c *HumanCLI) AddWithOptions(opts AddOptions) error {
 	extractedEntities := entity.ExtractEntities(finalContent, "")
 
 	b := &beat.Beat{
-		ID:          beat.GenerateIDWithSequence(time.Now().UTC(), seq),
-		CreatedAt:   time.Now().UTC(),
+		ID:          beat.GenerateIDWithSequence(createdAt, seq),
+		CreatedAt:   createdAt,
 		UpdatedAt:   time.Now().UTC(),
 		Impetus:     imp,
 		Content:     finalContent,
@@ -347,6 +356,146 @@ func (c *HumanCLI) Search(query string, maxResults int, sessionFilter string) er
 	}
 
 	return nil
+}
+
+// EditOptions contains options for editing a beat.
+type EditOptions struct {
+	Content  string
+	Impetus  string
+	Date     string
+	AddRefs  []string
+	RmRefs   []string
+	AddBeads []string
+	RmBeads  []string
+}
+
+// Redate changes the creation date of a beat (convenience wrapper around Edit).
+func (c *HumanCLI) Redate(id string, dateStr string) error {
+	parsedDate, err := ParseRelativeDate(dateStr)
+	if err != nil {
+		return fmt.Errorf("invalid date: %w", err)
+	}
+	return c.Edit(id, EditOptions{
+		Date: parsedDate.Format(time.RFC3339),
+	})
+}
+
+// Edit modifies an existing beat.
+func (c *HumanCLI) Edit(id string, opts EditOptions) error {
+	existingBeat, err := c.store.Get(id)
+	if err != nil {
+		return err
+	}
+
+	var newDate time.Time
+	dateChanging := false
+	if opts.Date != "" {
+		parsedDate, err := time.Parse(time.RFC3339, opts.Date)
+		if err != nil {
+			parsedDate, err = time.Parse("2006-01-02", opts.Date)
+			if err != nil {
+				return fmt.Errorf("invalid date format (use RFC3339 or YYYY-MM-DD): %w", err)
+			}
+		}
+		newDate = parsedDate.UTC()
+		oldDateStr := existingBeat.CreatedAt.UTC().Format("20060102")
+		newDateStr := newDate.Format("20060102")
+		dateChanging = oldDateStr != newDateStr
+	}
+
+	if dateChanging {
+		seq, err := c.store.NextSequenceForDate(newDate)
+		if err != nil {
+			return fmt.Errorf("failed to get sequence: %w", err)
+		}
+
+		newBeat := *existingBeat
+		newBeat.ID = beat.GenerateIDWithSequence(newDate, seq)
+		newBeat.CreatedAt = newDate
+		newBeat.UpdatedAt = time.Now().UTC()
+
+		applyEditOptions(&newBeat, opts)
+
+		if err := c.store.Delete(id); err != nil {
+			return fmt.Errorf("failed to delete old beat: %w", err)
+		}
+		if err := c.store.Append(&newBeat); err != nil {
+			return fmt.Errorf("failed to create new beat: %w", err)
+		}
+
+		fmt.Printf("Updated beat: %s -> %s\n", id, newBeat.ID)
+		return nil
+	}
+
+	updated, err := c.store.Update(id, func(b *beat.Beat) error {
+		applyEditOptions(b, opts)
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("failed to update beat: %w", err)
+	}
+
+	fmt.Printf("Updated beat: %s\n", updated.ID)
+	return nil
+}
+
+func applyEditOptions(b *beat.Beat, opts EditOptions) {
+	if opts.Content != "" {
+		b.Content = opts.Content
+	}
+	if opts.Impetus != "" {
+		b.Impetus.Label = opts.Impetus
+	}
+
+	for _, ref := range opts.AddRefs {
+		parts := strings.SplitN(ref, ":", 2)
+		if len(parts) == 2 {
+			b.References = append(b.References, beat.Reference{
+				Kind:    parts[0],
+				Locator: parts[1],
+			})
+		}
+	}
+
+	for _, locator := range opts.RmRefs {
+		filtered := make([]beat.Reference, 0, len(b.References))
+		for _, r := range b.References {
+			if r.Locator != locator {
+				filtered = append(filtered, r)
+			}
+		}
+		b.References = filtered
+	}
+
+	existing := make(map[string]bool)
+	for _, beadID := range b.LinkedBeads {
+		existing[beadID] = true
+	}
+	for _, beadID := range opts.AddBeads {
+		if !existing[beadID] {
+			b.LinkedBeads = append(b.LinkedBeads, beadID)
+			existing[beadID] = true
+		}
+	}
+
+	for _, beadID := range opts.RmBeads {
+		filtered := make([]string, 0, len(b.LinkedBeads))
+		for _, bid := range b.LinkedBeads {
+			if bid != beadID {
+				filtered = append(filtered, bid)
+			}
+		}
+		b.LinkedBeads = filtered
+	}
+}
+
+// Amend edits the most recent beat.
+func (c *HumanCLI) Amend(opts EditOptions) error {
+	mostRecent, err := c.store.MostRecent()
+	if err != nil {
+		return fmt.Errorf("cannot amend: %w", err)
+	}
+	return c.Edit(mostRecent.ID, opts)
 }
 
 // Link adds bead IDs to a beat's linked_beads.
@@ -555,6 +704,73 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen-3] + "..."
+}
+
+// ParseRelativeDate parses a date string that can be:
+// - ISO8601 datetime (e.g., "2024-01-15", "2024-01-15T10:30:00Z")
+// - Relative string (e.g., "yesterday", "3d ago", "1 week ago")
+// Returns error if date is in the future.
+func ParseRelativeDate(s string) (time.Time, error) {
+	now := time.Now().UTC()
+	s = strings.TrimSpace(strings.ToLower(s))
+
+	// Try ISO8601 formats first
+	formats := []string{
+		time.RFC3339,
+		"2006-01-02T15:04:05",
+		"2006-01-02",
+	}
+	for _, format := range formats {
+		if t, err := time.Parse(format, s); err == nil {
+			t = t.UTC()
+			if t.After(now) {
+				return time.Time{}, fmt.Errorf("date cannot be in the future")
+			}
+			return t, nil
+		}
+	}
+
+	// Handle relative dates
+	var result time.Time
+	switch s {
+	case "yesterday":
+		result = now.AddDate(0, 0, -1)
+	case "today":
+		result = now
+	default:
+		// Parse patterns like "3d ago", "1 week ago", "2 weeks ago", "1w ago"
+		s = strings.TrimSuffix(s, " ago")
+		s = strings.TrimSpace(s)
+
+		// Try patterns: "3d", "3 days", "1w", "1 week", "2 weeks"
+		var num int
+		var unit string
+
+		// Try "Nd" or "Nw" format
+		if n, err := fmt.Sscanf(s, "%d%s", &num, &unit); err == nil && n == 2 {
+			unit = strings.TrimSpace(unit)
+		} else if n, err := fmt.Sscanf(s, "%d %s", &num, &unit); err == nil && n == 2 {
+			// "N unit" format
+		} else {
+			return time.Time{}, fmt.Errorf("unrecognized date format: %s", s)
+		}
+
+		switch unit {
+		case "d", "day", "days":
+			result = now.AddDate(0, 0, -num)
+		case "w", "week", "weeks":
+			result = now.AddDate(0, 0, -num*7)
+		case "m", "month", "months":
+			result = now.AddDate(0, -num, 0)
+		default:
+			return time.Time{}, fmt.Errorf("unrecognized time unit: %s", unit)
+		}
+	}
+
+	if result.After(now) {
+		return time.Time{}, fmt.Errorf("date cannot be in the future")
+	}
+	return result, nil
 }
 
 // EmbeddingsCompute generates embeddings for all beats
@@ -1120,5 +1336,360 @@ func (c *HumanCLI) SemanticSearch(query string, maxResults int) error {
 		fmt.Printf("  [%.3f] %s  %s\n", r.Score, r.ID, r.Impetus.Label)
 		fmt.Printf("              %s\n\n", preview)
 	}
+	return nil
+}
+
+// ExportOptions contains options for the export command.
+type ExportOptions struct {
+	Format  string // json, jsonl, csv
+	Since   string // datetime filter (created_at >= since)
+	Until   string // datetime filter (created_at <= until)
+	Impetus string // filter by impetus label (substring match)
+	Query   string // filter by content (substring match)
+	Output  string // output file path (empty = stdout)
+}
+
+// Export exports beats in the specified format with optional filters.
+func (c *HumanCLI) Export(opts ExportOptions) error {
+	beats, err := c.store.ReadAll()
+	if err != nil {
+		return fmt.Errorf("failed to read beats: %w", err)
+	}
+
+	// Apply filters
+	filtered := beats
+	if opts.Since != "" {
+		sinceTime, err := parseDateTime(opts.Since)
+		if err != nil {
+			return fmt.Errorf("invalid --since datetime: %w", err)
+		}
+		var tmp []beat.Beat
+		for _, b := range filtered {
+			if !b.CreatedAt.Before(sinceTime) {
+				tmp = append(tmp, b)
+			}
+		}
+		filtered = tmp
+	}
+
+	if opts.Until != "" {
+		untilTime, err := parseDateTime(opts.Until)
+		if err != nil {
+			return fmt.Errorf("invalid --until datetime: %w", err)
+		}
+		var tmp []beat.Beat
+		for _, b := range filtered {
+			if !b.CreatedAt.After(untilTime) {
+				tmp = append(tmp, b)
+			}
+		}
+		filtered = tmp
+	}
+
+	if opts.Impetus != "" {
+		impetusLower := strings.ToLower(opts.Impetus)
+		var tmp []beat.Beat
+		for _, b := range filtered {
+			if strings.Contains(strings.ToLower(b.Impetus.Label), impetusLower) {
+				tmp = append(tmp, b)
+			}
+		}
+		filtered = tmp
+	}
+
+	if opts.Query != "" {
+		queryLower := strings.ToLower(opts.Query)
+		var tmp []beat.Beat
+		for _, b := range filtered {
+			if strings.Contains(strings.ToLower(b.Content), queryLower) {
+				tmp = append(tmp, b)
+			}
+		}
+		filtered = tmp
+	}
+
+	// Determine output destination
+	var out *os.File
+	if opts.Output != "" {
+		f, err := os.Create(opts.Output)
+		if err != nil {
+			return fmt.Errorf("failed to create output file: %w", err)
+		}
+		defer f.Close()
+		out = f
+	} else {
+		out = os.Stdout
+	}
+
+	// Output in requested format
+	switch opts.Format {
+	case "json":
+		enc := json.NewEncoder(out)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(filtered); err != nil {
+			return fmt.Errorf("failed to write JSON: %w", err)
+		}
+	case "jsonl", "":
+		for _, b := range filtered {
+			data, err := json.Marshal(b)
+			if err != nil {
+				return fmt.Errorf("failed to marshal beat %s: %w", b.ID, err)
+			}
+			if _, err := fmt.Fprintln(out, string(data)); err != nil {
+				return fmt.Errorf("failed to write JSONL: %w", err)
+			}
+		}
+	case "csv":
+		if _, err := fmt.Fprintln(out, "id,created_at,updated_at,impetus_label,content"); err != nil {
+			return fmt.Errorf("failed to write CSV header: %w", err)
+		}
+		for _, b := range filtered {
+			line := fmt.Sprintf("%s,%s,%s,%s,%s",
+				escapeCSV(b.ID),
+				escapeCSV(b.CreatedAt.Format(time.RFC3339)),
+				escapeCSV(b.UpdatedAt.Format(time.RFC3339)),
+				escapeCSV(b.Impetus.Label),
+				escapeCSV(b.Content),
+			)
+			if _, err := fmt.Fprintln(out, line); err != nil {
+				return fmt.Errorf("failed to write CSV row: %w", err)
+			}
+		}
+	default:
+		return fmt.Errorf("unknown format: %s (use json, jsonl, or csv)", opts.Format)
+	}
+
+	return nil
+}
+
+// parseDateTime parses a datetime string in ISO8601 format or relative format.
+func parseDateTime(s string) (time.Time, error) {
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t, nil
+	}
+	if t, err := time.Parse("2006-01-02", s); err == nil {
+		return t, nil
+	}
+	if strings.HasPrefix(s, "-") {
+		dur, err := time.ParseDuration(s[1:])
+		if err == nil {
+			return time.Now().Add(-dur), nil
+		}
+		if strings.HasSuffix(s, "d") {
+			var n int
+			if _, err := fmt.Sscanf(s[1:], "%dd", &n); err == nil {
+				return time.Now().AddDate(0, 0, -n), nil
+			}
+		}
+	}
+	return time.Time{}, fmt.Errorf("cannot parse datetime: %s (use RFC3339, YYYY-MM-DD, or relative like -7d, -24h)", s)
+}
+
+// escapeCSV escapes a string for CSV output.
+func escapeCSV(s string) string {
+	if strings.ContainsAny(s, ",\"\n\r") {
+		s = strings.ReplaceAll(s, "\"", "\"\"")
+		return "\"" + s + "\""
+	}
+	return s
+}
+
+// ImportOptions contains options for the import command.
+type ImportOptions struct {
+	Format     string // json, jsonl (auto-detect from extension if empty)
+	OnConflict string // error, skip, renumber (default: error)
+	Source     string // optional source label for impetus.meta
+	DryRun     bool   // preview without writing
+}
+
+// Import imports beats from a file or stdin.
+func (c *HumanCLI) Import(filePath string, opts ImportOptions) error {
+	// Set defaults
+	if opts.OnConflict == "" {
+		opts.OnConflict = "error"
+	}
+
+	// Read input
+	var data []byte
+	var err error
+	if filePath == "-" {
+		data, err = io.ReadAll(os.Stdin)
+	} else {
+		data, err = os.ReadFile(filePath)
+	}
+	if err != nil {
+		return fmt.Errorf("failed to read input: %w", err)
+	}
+
+	// Auto-detect format from extension if not specified
+	format := opts.Format
+	if format == "" && filePath != "-" {
+		if strings.HasSuffix(filePath, ".json") {
+			format = "json"
+		} else if strings.HasSuffix(filePath, ".jsonl") {
+			format = "jsonl"
+		}
+	}
+	if format == "" {
+		format = "jsonl" // default
+	}
+
+	// Parse beats
+	var beats []beat.Beat
+	switch format {
+	case "json":
+		if err := json.Unmarshal(data, &beats); err != nil {
+			return fmt.Errorf("failed to parse JSON: %w", err)
+		}
+	case "jsonl":
+		scanner := bufio.NewScanner(strings.NewReader(string(data)))
+		lineNum := 0
+		for scanner.Scan() {
+			lineNum++
+			line := strings.TrimSpace(scanner.Text())
+			if line == "" {
+				continue
+			}
+			var b beat.Beat
+			if err := json.Unmarshal([]byte(line), &b); err != nil {
+				return fmt.Errorf("failed to parse JSONL at line %d: %w", lineNum, err)
+			}
+			beats = append(beats, b)
+		}
+		if err := scanner.Err(); err != nil {
+			return fmt.Errorf("failed to read JSONL: %w", err)
+		}
+	default:
+		return fmt.Errorf("unknown format: %s (use json or jsonl)", format)
+	}
+
+	if len(beats) == 0 {
+		fmt.Println("No beats to import.")
+		return nil
+	}
+
+	// Validate required fields
+	for i, b := range beats {
+		if b.Content == "" {
+			return fmt.Errorf("beat %d missing required field: content", i+1)
+		}
+		if b.Impetus.Label == "" {
+			return fmt.Errorf("beat %d missing required field: impetus.label", i+1)
+		}
+	}
+
+	// Check for conflicts and prepare beats for import
+	var toImport []*beat.Beat
+	var skipped, renumbered int
+
+	for i := range beats {
+		b := beats[i]
+
+		// Add source to meta if specified
+		if opts.Source != "" {
+			if b.Impetus.Meta == nil {
+				b.Impetus.Meta = make(map[string]string)
+			}
+			b.Impetus.Meta["source"] = opts.Source
+		}
+
+		// Check if ID already exists
+		exists := false
+		if b.ID != "" {
+			exists, _ = c.store.BeatExists(b.ID)
+		}
+
+		switch opts.OnConflict {
+		case "error":
+			if exists {
+				return fmt.Errorf("beat with ID %s already exists (use --on-conflict skip or renumber)", b.ID)
+			}
+			// Generate ID if missing
+			if b.ID == "" {
+				createdAt := b.CreatedAt
+				if createdAt.IsZero() {
+					createdAt = time.Now().UTC()
+				}
+				seq, err := c.store.NextSequenceForDate(createdAt)
+				if err != nil {
+					return fmt.Errorf("failed to get sequence: %w", err)
+				}
+				b.ID = beat.GenerateIDWithSequence(createdAt, seq)
+			}
+			toImport = append(toImport, &b)
+
+		case "skip":
+			if exists {
+				skipped++
+				continue
+			}
+			if b.ID == "" {
+				createdAt := b.CreatedAt
+				if createdAt.IsZero() {
+					createdAt = time.Now().UTC()
+				}
+				seq, err := c.store.NextSequenceForDate(createdAt)
+				if err != nil {
+					return fmt.Errorf("failed to get sequence: %w", err)
+				}
+				b.ID = beat.GenerateIDWithSequence(createdAt, seq)
+			}
+			toImport = append(toImport, &b)
+
+		case "renumber":
+			createdAt := b.CreatedAt
+			if createdAt.IsZero() {
+				createdAt = time.Now().UTC()
+			}
+			seq, err := c.store.NextSequenceForDate(createdAt)
+			if err != nil {
+				return fmt.Errorf("failed to get sequence: %w", err)
+			}
+			b.ID = beat.GenerateIDWithSequence(createdAt, seq)
+			renumbered++
+			toImport = append(toImport, &b)
+
+		default:
+			return fmt.Errorf("unknown conflict strategy: %s (use error, skip, or renumber)", opts.OnConflict)
+		}
+
+		// Set timestamps if missing
+		if b.CreatedAt.IsZero() {
+			toImport[len(toImport)-1].CreatedAt = time.Now().UTC()
+		}
+		if b.UpdatedAt.IsZero() {
+			toImport[len(toImport)-1].UpdatedAt = time.Now().UTC()
+		}
+	}
+
+	// Dry run output
+	if opts.DryRun {
+		fmt.Printf("[dry-run] Would import %d beat(s)\n", len(toImport))
+		if skipped > 0 {
+			fmt.Printf("[dry-run] Skipped %d beat(s) with existing IDs\n", skipped)
+		}
+		if renumbered > 0 {
+			fmt.Printf("[dry-run] Renumbered %d beat(s)\n", renumbered)
+		}
+		for _, b := range toImport {
+			preview := truncate(b.Content, 50)
+			fmt.Printf("  %s  %s\n", b.ID, preview)
+		}
+		return nil
+	}
+
+	// Write beats
+	if err := c.store.AppendBulk(toImport); err != nil {
+		return fmt.Errorf("failed to write beats: %w", err)
+	}
+
+	fmt.Printf("Imported %d beat(s)\n", len(toImport))
+	if skipped > 0 {
+		fmt.Printf("Skipped %d beat(s) with existing IDs\n", skipped)
+	}
+	if renumbered > 0 {
+		fmt.Printf("Renumbered %d beat(s)\n", renumbered)
+	}
+
 	return nil
 }

@@ -5,13 +5,23 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/bierlingm/beats/internal/cli"
 	"github.com/bierlingm/beats/internal/hooks"
 	"github.com/bierlingm/beats/internal/store"
 )
 
-const version = "0.4.1"
+const version = "0.5.0"
+
+// multiFlag allows a flag to be specified multiple times
+type multiFlag []string
+
+func (m *multiFlag) String() string { return strings.Join(*m, ",") }
+func (m *multiFlag) Set(value string) error {
+	*m = append(*m, value)
+	return nil
+}
 
 func main() {
 	if err := run(); err != nil {
@@ -106,12 +116,62 @@ func handleRobotCommand(cmd string, args []string) error {
 		return robotCLI.SynthesisClear()
 	case "--robot-context":
 		return robotCLI.Context(os.Stdin)
+	case "--robot-edit":
+		return robotCLI.Edit(os.Stdin)
+	case "--robot-amend":
+		return robotCLI.Amend(os.Stdin)
+	case "--robot-import":
+		return robotCLI.Import(os.Stdin)
+	case "--robot-export":
+		return robotCLI.Export(os.Stdin)
+	case "--robot-redate":
+		return robotCLI.Redate(os.Stdin)
 	default:
 		return fmt.Errorf("unknown robot command: %s", cmd)
 	}
 }
 
+func handleExportCommand(args []string) error {
+	fs := flag.NewFlagSet("export", flag.ExitOnError)
+	beatsDir := fs.String("dir", "", "Beats directory")
+	exportFormat := fs.String("format", "jsonl", "Output format: json, jsonl, csv")
+	exportSince := fs.String("since", "", "Filter by created_at >= datetime")
+	exportUntil := fs.String("until", "", "Filter by created_at <= datetime")
+	exportImpetus := fs.String("impetus", "", "Filter by impetus label (substring match)")
+	exportQuery := fs.String("query", "", "Filter by content (substring match)")
+	exportOutput := fs.String("output", "", "Output file (default: stdout)")
+	exportOutputShort := fs.String("o", "", "Output file (short)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	jsonStore, err := store.NewJSONLStore(*beatsDir)
+	if err != nil {
+		return fmt.Errorf("failed to initialize store: %w", err)
+	}
+
+	output := *exportOutput
+	if output == "" {
+		output = *exportOutputShort
+	}
+
+	humanCLI := cli.NewHumanCLI(jsonStore)
+	return humanCLI.Export(cli.ExportOptions{
+		Format:  *exportFormat,
+		Since:   *exportSince,
+		Until:   *exportUntil,
+		Impetus: *exportImpetus,
+		Query:   *exportQuery,
+		Output:  output,
+	})
+}
+
 func handleHumanCommand(cmd string, args []string) error {
+	// Handle export command separately with its own flag set
+	if cmd == "export" {
+		return handleExportCommand(args)
+	}
+
 	// Create flag set for subcommand
 	fs := flag.NewFlagSet(cmd, flag.ExitOnError)
 	beatsDir := fs.String("dir", "", "Beats directory")
@@ -136,10 +196,23 @@ func handleHumanCommand(cmd string, args []string) error {
 	coachingShort := fs.Bool("c", false, "Mark as coaching (short)")
 	sessionInsight := fs.Bool("session-insight", false, "Mark as session insight")
 	sessionInsightShort := fs.Bool("s", false, "Mark as session insight (short)")
+	dateStr := fs.String("date", "", "Backdate beat (ISO8601 or relative: yesterday, 3d ago)")
+	dateStrShort := fs.String("d", "", "Backdate beat (short)")
 	searchSemantic := fs.Bool("semantic", false, "Use semantic search")
 	robotOutput := fs.Bool("robot", false, "Output JSON (for context command)")
 	consolidate := fs.Bool("consolidate", false, "Consolidate scattered .beats/ into global store")
 	cleanup := fs.Bool("cleanup", false, "Remove old .beats/ directories after migration verification")
+
+	// Edit command flags
+	editContent := fs.String("content", "", "New content for beat (edit command)")
+	addRef := multiFlag{}
+	fs.Var(&addRef, "add-ref", "Add reference (kind:locator)")
+	rmRef := multiFlag{}
+	fs.Var(&rmRef, "rm-ref", "Remove reference by locator")
+	addBead := multiFlag{}
+	fs.Var(&addBead, "add-bead", "Link a bead")
+	rmBead := multiFlag{}
+	fs.Var(&rmBead, "rm-bead", "Unlink a bead")
 
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -171,6 +244,20 @@ func handleHumanCommand(cmd string, args []string) error {
 		isCoaching := *coaching || *coachingShort
 		isSession := *sessionInsight || *sessionInsightShort
 
+		// Resolve date flag
+		dateFlagVal := *dateStr
+		if dateFlagVal == "" {
+			dateFlagVal = *dateStrShort
+		}
+		var parsedDate *time.Time
+		if dateFlagVal != "" {
+			t, err := cli.ParseRelativeDate(dateFlagVal)
+			if err != nil {
+				return fmt.Errorf("invalid date: %w", err)
+			}
+			parsedDate = &t
+		}
+
 		// Content is optional when using capture flags
 		content := strings.Join(cmdArgs, " ")
 		if web == "" && github == "" && twitter == "" && content == "" {
@@ -185,6 +272,7 @@ func handleHumanCommand(cmd string, args []string) error {
 			TwitterURL:   twitter,
 			Coaching:     isCoaching,
 			Session:      isSession,
+			Date:         parsedDate,
 		})
 
 	case "list":
@@ -284,6 +372,90 @@ func handleHumanCommand(cmd string, args []string) error {
 		}
 		return humanCLI.ContextWithOptions(path, *limit, *robotOutput)
 
+	case "edit":
+		if len(cmdArgs) == 0 {
+			return fmt.Errorf("edit requires beat ID argument")
+		}
+		dateFlagVal := *dateStr
+		if dateFlagVal == "" {
+			dateFlagVal = *dateStrShort
+		}
+		return humanCLI.Edit(cmdArgs[0], cli.EditOptions{
+			Content:  *editContent,
+			Impetus:  *impetusLabel,
+			Date:     dateFlagVal,
+			AddRefs:  addRef,
+			RmRefs:   rmRef,
+			AddBeads: addBead,
+			RmBeads:  rmBead,
+		})
+
+	case "amend":
+		dateFlagVal := *dateStr
+		if dateFlagVal == "" {
+			dateFlagVal = *dateStrShort
+		}
+		return humanCLI.Amend(cli.EditOptions{
+			Content:  *editContent,
+			Impetus:  *impetusLabel,
+			Date:     dateFlagVal,
+			AddRefs:  addRef,
+			RmRefs:   rmRef,
+			AddBeads: addBead,
+			RmBeads:  rmBead,
+		})
+
+	case "redate":
+		if len(cmdArgs) < 2 {
+			return fmt.Errorf("redate requires beat ID and datetime arguments")
+		}
+		return humanCLI.Redate(cmdArgs[0], cmdArgs[1])
+
+	case "export":
+		exportFs := flag.NewFlagSet("export", flag.ExitOnError)
+		exportFormat := exportFs.String("format", "jsonl", "Output format: json, jsonl, csv")
+		exportSince := exportFs.String("since", "", "Filter by created_at >= datetime")
+		exportUntil := exportFs.String("until", "", "Filter by created_at <= datetime")
+		exportImpetus := exportFs.String("impetus", "", "Filter by impetus label (substring match)")
+		exportQuery := exportFs.String("query", "", "Filter by content (substring match)")
+		exportOutput := exportFs.String("output", "", "Output file (default: stdout)")
+		exportOutputShort := exportFs.String("o", "", "Output file (short)")
+		if err := exportFs.Parse(cmdArgs); err != nil {
+			return err
+		}
+		output := *exportOutput
+		if output == "" {
+			output = *exportOutputShort
+		}
+		return humanCLI.Export(cli.ExportOptions{
+			Format:  *exportFormat,
+			Since:   *exportSince,
+			Until:   *exportUntil,
+			Impetus: *exportImpetus,
+			Query:   *exportQuery,
+			Output:  output,
+		})
+
+	case "import":
+		importFs := flag.NewFlagSet("import", flag.ExitOnError)
+		importFormat := importFs.String("format", "", "Input format: json, jsonl (auto-detect from extension)")
+		importOnConflict := importFs.String("on-conflict", "error", "Conflict strategy: error, skip, renumber")
+		importSource := importFs.String("source", "", "Set impetus.meta.source on all imported beats")
+		importDryRun := importFs.Bool("dry-run", false, "Preview without writing")
+		if err := importFs.Parse(cmdArgs); err != nil {
+			return err
+		}
+		importArgs := importFs.Args()
+		if len(importArgs) == 0 {
+			return fmt.Errorf("import requires file path or - for stdin")
+		}
+		return humanCLI.Import(importArgs[0], cli.ImportOptions{
+			Format:     *importFormat,
+			OnConflict: *importOnConflict,
+			Source:     *importSource,
+			DryRun:     *importDryRun,
+		})
+
 	default:
 		return fmt.Errorf("unknown command: %s", cmd)
 	}
@@ -348,6 +520,7 @@ HUMAN COMMANDS:
   prime                  Output context for AI session injection
   add "content"          Add a new beat with the given content
     --impetus "label"    Optional impetus label
+    -d, --date DATE      Backdate beat (ISO8601 or relative: yesterday, 3d ago)
     -w, --web URL        Capture from web URL with title extraction
     -g, --github ref     Capture GitHub repo (owner/repo)
     -x, --twitter URL    Capture X/Twitter link
@@ -375,6 +548,33 @@ HUMAN COMMANDS:
     --to <directory>     Target .beats directory
 
   where                  Show which .beats directory is being used
+
+  edit <beat-id>         Edit an existing beat
+    --content "text"     Replace content
+    --impetus "label"    Replace impetus label
+    --date DATE          Change created_at (regenerates ID if date changes)
+    --add-ref kind:loc   Add reference
+    --rm-ref locator     Remove reference
+    --add-bead id        Link bead
+    --rm-bead id         Unlink bead
+
+  amend                  Edit most recent beat (same flags as edit)
+
+  redate <id> <date>     Change beat date (convenience for edit --date)
+
+  export                 Export beats to file or stdout
+    --format F           Output format: json, jsonl, csv (default: jsonl)
+    --since DATE         Filter by created_at >= date
+    --until DATE         Filter by created_at <= date
+    --impetus "label"    Filter by impetus (substring)
+    --query "text"       Filter by content (substring)
+    -o, --output FILE    Write to file (default: stdout)
+
+  import <file>          Import beats from JSON/JSONL (use - for stdin)
+    --format F           Input format: json, jsonl (auto-detect)
+    --on-conflict S      Strategy: error, skip, renumber (default: error)
+    --source "label"     Set impetus.meta.source on imported beats
+    --dry-run            Preview without writing
 
   hooks init             Initialize hooks config (enables synthesis triggers)
   hooks status           Check if synthesis is pending

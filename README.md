@@ -4,193 +4,325 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/bierlingm/beats)](https://goreportcard.com/report/github.com/bierlingm/beats)
 [![Go Reference](https://pkg.go.dev/badge/github.com/bierlingm/beats.svg)](https://pkg.go.dev/github.com/bierlingm/beats)
 
-Narrative substrate for [beads](https://github.com/Dicklesworthstone/beads). Captures insights, discoveries, and reflections that feed into actionable work.
+**Narrative substrate for [beads](https://github.com/Dicklesworthstone/beads).** Captures insights, discoveries, and reflections that feed into actionable work.
 
-## Philosophy
-
-**Beats** are the "why" and context. **Beads** are the "what" (actionable work).
-
-A beat is a minimally structured narrative unit—an insight from a coaching session, a discovery while browsing, a reflection during a walk. Beats accumulate as raw material. When a beat becomes actionable, it promotes to a bead and the beat remains as narrative context.
+## The Mental Model
 
 ```
-[beat] "Noticed users struggle with onboarding flow"
-   ↓ becomes actionable
-[bead] "Redesign onboarding: add progress indicator"
-   ↑ beat linked as context
+Beats are the "why" — context, insight, narrative
+Beads are the "what" — actionable work items
+
+[beat] "Users abandon checkout when shipping costs appear late"
+   ↓ crystallizes into action
+[bead] "Show shipping estimate on product page"
+   ↑ beat remains as context for why this matters
 ```
+
+A beat is a minimally structured narrative unit: an insight from coaching, a discovery while browsing, a reflection during a walk. Beats accumulate as raw material. When patterns emerge or action becomes clear, a beat promotes to a bead—and the beat remains as context.
 
 ## Installation
 
-**One-liner (macOS/Linux):**
 ```bash
+# One-liner (macOS/Linux)
 curl -sL https://raw.githubusercontent.com/bierlingm/beats/main/install.sh | sh
-```
 
-**With Go:**
-```bash
+# With Go
 go install github.com/bierlingm/beats/cmd/beats@latest
+
+# From source
+git clone https://github.com/bierlingm/beats && cd beats && go install ./cmd/beats
 ```
 
-**From source:**
+**Recommended alias:**
 ```bash
-git clone https://github.com/bierlingm/beats
-cd beats && go build -o beats ./cmd/beats
-```
-
-## What's New in v0.4
-
-### Smart Impetus Inference
-Beats auto-detect impetus from content patterns:
-- URLs → "Web discovery", "GitHub discovery", "X discovery"
-- Coaching patterns → "Coaching"
-- Session patterns → "Session"
-
-### Session Tagging
-Beats captured during Droid sessions are auto-tagged:
-```bash
-# Automatic when FACTORY_SESSION_ID is set
-bt add "insight"  # → session_id populated
-
-# Query by session
-bt search --session current
-bt search --session abc123
-```
-
-### Quick Capture Flags
-```bash
-bt add -w "https://..."       # Web + auto-extract title
-bt add -g "owner/repo"        # GitHub + fetch description
-bt add -x "https://x.com/..." # X/Twitter
-bt add -c "insight"           # Coaching impetus
-bt add -s "note"              # Session impetus + auto-tag
-```
-
-### Session-End Hooks
-```bash
-bt hooks session-end   # Create beat from current Factory session
-bt hooks configure     # Show hook configuration
-```
-
-### Semantic Search
-```bash
-bt embeddings compute  # Generate embeddings via Ollama
-bt embeddings status   # Check coverage
-bt search --semantic "concept or pattern"
-```
-
-### Shell Alias (Recommended)
-```bash
-alias ba='bt add'
-
-# Then:
-ba "quick insight"
-ba -w "https://cool-tool.dev"
+echo 'alias bt="beats"' >> ~/.zshrc  # or ~/.bashrc
 ```
 
 ## Quick Start
 
 ```bash
-# Add a beat
-bt add "Insight from coaching: commitment is about identity, not discipline"
-bt add --impetus "Web discovery" "Found interesting tool at https://example.com"
+# Capture an insight
+bt add "Noticed users struggle with onboarding flow"
 
-# List and view
-bt list
-bt show beat-20251211-001
+# Backdate a beat you forgot to capture
+bt add -d yesterday "Coaching insight: commitment is identity, not discipline"
 
-# Search
-bt search "coaching"
+# Capture from the web
+bt add -w "https://interesting-article.com"
 
-# Link a beat to beads
-bt link beat-20251211-001 mb-abc mb-xyz
+# Search your beats
+bt search "onboarding"
+
+# Export for backup
+bt export -o beats-backup.jsonl
 ```
 
-## Commands
+---
 
-### Human Commands
+## Command Reference
 
-| Command | Description |
-|---------|-------------|
-| `beats add "content"` | Add a new beat |
-| `beats add --impetus "label" "content"` | Add with custom impetus |
-| `beats list` | List all beats |
-| `beats show <beat-id>` | Show beat details |
-| `beats search "query"` | Search beats |
-| `beats link <beat-id> <bead-id>...` | Link beat to beads |
-
-### Robot Commands (JSON via stdin)
-
-For AI agents. All output is JSON to stdout.
+### Capturing Beats
 
 ```bash
-# Commit a beat
-echo '{"content":"...","impetus":{"label":"..."}}' | beats --robot-commit-beat
-
-# Search
-echo '{"query":"coaching"}' | beats --robot-search
-
-# Link beat to beads
-echo '{"beat_id":"beat-20251211-001","bead_ids":["mb-abc"]}' | beats --robot-link-beat
-
-# Get context for a bead
-echo '{"bead_id":"mb-abc"}' | beats --robot-context-for-bead
-
-# Full schema
-beats --robot-help
+bt add "content"                    # Basic beat
+bt add --impetus "Research" "..."   # With custom impetus label
+bt add -d "2024-01-15" "..."        # Backdate to specific date
+bt add -d "yesterday" "..."         # Backdate with relative date
+bt add -d "3d ago" "..."            # 3 days ago
+bt add -w "https://..."             # Capture from URL (extracts title)
+bt add -g "owner/repo"              # Capture GitHub repo
+bt add -x "https://x.com/..."       # Capture X/Twitter post
+bt add -c "insight"                 # Mark as coaching insight
+bt add -s "note"                    # Mark as session insight
 ```
 
-### Hooks (Synthesis Triggers)
-
-Beats can trigger synthesis when enough accumulate:
+### Viewing & Searching
 
 ```bash
-beats hooks init    # Create hooks.json config
-beats hooks status  # Check if synthesis pending
-beats hooks clear   # Clear after processing
+bt list                             # List all beats
+bt show beat-20240115-001           # Show beat details
+bt search "query"                   # Search by content/impetus
+bt search --max 50 "query"          # Limit results
+bt search --all "query"             # Search across all projects
+bt search --semantic "concept"      # Semantic search (requires embeddings)
 ```
 
-Configure `.beats/hooks.json`:
+### Editing Beats
+
+```bash
+bt edit <id> --content "new text"   # Replace content
+bt edit <id> --impetus "new label"  # Change impetus
+bt edit <id> --date "2024-01-10"    # Change date (regenerates ID)
+bt edit <id> --add-bead bd-xyz      # Link to a bead
+bt edit <id> --rm-bead bd-xyz       # Unlink from a bead
+bt edit <id> --add-ref "url:https://..." # Add reference
+
+bt amend --content "fixed typo"     # Edit most recent beat
+bt redate <id> yesterday            # Quick date change
+```
+
+### Managing Beats
+
+```bash
+bt delete <id>                      # Delete (with confirmation)
+bt rm --force <id>                  # Delete without confirmation
+bt move <id> --to /path/to/.beats   # Move to another project
+bt link <beat-id> <bead-id>...      # Link beat to beads
+bt where                            # Show active .beats directory
+```
+
+### Import & Export
+
+```bash
+# Export
+bt export                           # JSONL to stdout
+bt export -o backup.jsonl           # To file
+bt export --format json             # As JSON array
+bt export --format csv              # As CSV
+bt export --since 2024-01-01        # Filter by date
+bt export --impetus "Coaching"      # Filter by impetus
+bt export --query "onboarding"      # Filter by content
+
+# Import
+bt import beats.jsonl               # Import from JSONL
+bt import data.json --format json   # Import from JSON array
+bt import - < piped.jsonl           # Import from stdin
+bt import file.jsonl --on-conflict skip     # Skip existing IDs
+bt import file.jsonl --on-conflict renumber # Auto-assign new IDs
+bt import file.jsonl --source "Migration"   # Tag imported beats
+bt import file.jsonl --dry-run      # Preview without writing
+```
+
+### Embeddings & Semantic Search
+
+```bash
+bt embeddings compute               # Generate embeddings via Ollama
+bt embeddings status                # Check embedding coverage
+bt search --semantic "concept"      # Use semantic similarity
+```
+
+### Hooks & Synthesis
+
+```bash
+bt hooks init                       # Initialize hooks config
+bt hooks status                     # Check if synthesis pending
+bt hooks clear                      # Clear synthesis request
+bt hooks session-end                # Trigger session-end hook
+```
+
+### Context & Integration
+
+```bash
+bt prime                            # Output context for AI injection
+bt context [path]                   # Get beats relevant to path
+bt projects                         # List all beats projects
+```
+
+---
+
+## Robot Commands (for AI Agents)
+
+All robot commands read JSON from stdin and output JSON to stdout.
+
+```bash
+# Get full schema
+bt --robot-help
+
+# Core operations
+echo '{"raw_text":"..."}' | bt --robot-propose-beat
+echo '{"content":"...","impetus":{"label":"..."}}' | bt --robot-commit-beat
+echo '{"query":"..."}' | bt --robot-search
+
+# Temporal operations (new in v0.5)
+echo '{"id":"...", "content":"..."}' | bt --robot-edit
+echo '{"content":"..."}' | bt --robot-amend
+echo '{"id":"...", "date":"2024-01-15"}' | bt --robot-redate
+echo '{"beats":[...], "on_conflict":"renumber"}' | bt --robot-import
+echo '{"format":"json", "since":"..."}' | bt --robot-export
+
+# Context & linking
+echo '{"bead_id":"..."}' | bt --robot-context-for-bead
+echo '{"beat_id":"...", "bead_ids":["..."]}' | bt --robot-link-beat
+echo '{}' | bt --robot-map-beats-to-beads
+echo '{"since":"2024-01-01T00:00:00Z"}' | bt --robot-diff
+
+# Synthesis
+bt --robot-synthesis-status
+bt --robot-synthesis-clear
+```
+
+---
+
+## Data Model
+
+Beats are stored in `.beats/beats.jsonl` (append-only JSONL):
+
+```json
+{
+  "id": "beat-20240115-001",
+  "created_at": "2024-01-15T10:30:00Z",
+  "updated_at": "2024-01-15T10:30:00Z",
+  "impetus": {
+    "label": "Coaching session",
+    "meta": {"channel": "coaching"}
+  },
+  "content": "Commitment is about identity, not discipline...",
+  "references": [
+    {"kind": "url", "locator": "https://...", "label": "Source"}
+  ],
+  "entities": [
+    {"label": "onboarding", "category": "concept"}
+  ],
+  "linked_beads": ["bd-abc", "bd-xyz"],
+  "session_id": "factory-session-123",
+  "context": {
+    "capture_path": "/Users/me/werk/project",
+    "wald_directory": "gate/project"
+  }
+}
+```
+
+### ID Format
+
+Beat IDs follow the pattern `beat-YYYYMMDD-NNN`:
+- Date portion reflects `created_at`
+- Sequence number is unique within the day
+- When backdating, IDs are regenerated to match the new date
+
+### Impetus Labels
+
+Impetus captures why a beat was recorded. Auto-inferred from content:
+- URLs → "Web discovery", "GitHub discovery", "X discovery"
+- Coaching patterns → "Coaching"
+- Session markers → "Session"
+- Default → "Manual entry"
+
+---
+
+## Configuration
+
+### Environment Variables
+
+| Variable | Purpose |
+|----------|---------|
+| `BEATS_DIR` | Override beats directory |
+| `BEATS_ROOT` | Root for cross-project search |
+| `FACTORY_SESSION_ID` | Auto-tag beats with session ID |
+
+### Hooks Configuration
+
+Create `.beats/hooks.json`:
+
 ```json
 {
   "synthesis": {
     "enabled": true,
     "threshold": 5,
     "action": "file"
+  },
+  "session_end": {
+    "enabled": true,
+    "summary_prompt": "Summarize key insights from this session"
   }
 }
 ```
 
-When threshold is reached, `.beats/synthesis_needed.json` is created with a prompt for the "Lattice Weaver" synthesis agent.
+When beat count reaches threshold, `.beats/synthesis_needed.json` is created for processing by synthesis agents.
 
-## Data Storage
-
-Beats are stored in `.beats/beats.jsonl` (append-only JSONL). Each beat:
-
-```json
-{
-  "id": "beat-20251211-001",
-  "created_at": "2025-12-11T10:30:00Z",
-  "updated_at": "2025-12-11T10:30:00Z",
-  "impetus": {"label": "Coaching session", "meta": {"channel": "coaching"}},
-  "content": "Insight about...",
-  "references": [],
-  "entities": [],
-  "linked_beads": ["mb-abc"]
-}
-```
+---
 
 ## Integration with Beads
 
 ```bash
-# Create a bead from an insight
-bd create "Redesign onboarding flow" -t task -p 2
+# Insight captured
+bt add "Users abandon checkout when shipping costs surprise them"
 
-# Link the originating beat
-beats link beat-20251211-001 mb-xyz
+# Becomes actionable work
+bd create "Show shipping estimate on product page" -t task
 
-# Later, get context for the bead
-echo '{"bead_id":"mb-xyz"}' | beats --robot-context-for-bead
+# Link the context
+bt link beat-20240115-001 bd-xyz
+
+# Later, AI agents can retrieve context
+echo '{"bead_id":"bd-xyz"}' | bt --robot-context-for-bead
 ```
+
+---
+
+## Date Formats
+
+The `--date` / `-d` flag accepts:
+
+| Format | Example |
+|--------|---------|
+| ISO8601 | `2024-01-15`, `2024-01-15T10:30:00Z` |
+| Relative | `yesterday`, `today` |
+| Days ago | `3d ago`, `3d`, `-3d` |
+| Weeks ago | `2w ago`, `2w`, `1 week ago` |
+| Months ago | `1 month ago`, `1m ago` |
+
+---
+
+## Architecture
+
+```
+beats/
+├── cmd/beats/          # CLI entrypoint
+├── internal/
+│   ├── beat/           # Core data types
+│   ├── cli/            # Human & robot command handlers
+│   ├── store/          # JSONL persistence
+│   ├── hooks/          # Synthesis triggers
+│   ├── capture/        # Web/GitHub/Twitter extraction
+│   ├── embeddings/     # Ollama integration
+│   └── impetus/        # Auto-inference
+└── .beats/             # Data directory
+    ├── beats.jsonl     # Beat storage
+    ├── hooks.json      # Hook configuration
+    └── embeddings.db   # Vector storage
+```
+
+---
 
 ## License
 

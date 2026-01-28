@@ -284,6 +284,11 @@ func (s *JSONLStore) Get(id string) (*beat.Beat, error) {
 
 // NextSequence returns the next sequence number for today's beats.
 func (s *JSONLStore) NextSequence() (int, error) {
+	return s.NextSequenceForDate(time.Now().UTC())
+}
+
+// NextSequenceForDate returns the next sequence number for beats on a specific date.
+func (s *JSONLStore) NextSequenceForDate(date time.Time) (int, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -292,8 +297,8 @@ func (s *JSONLStore) NextSequence() (int, error) {
 		return 1, err
 	}
 
-	today := time.Now().UTC().Format("20060102")
-	prefix := fmt.Sprintf("beat-%s-", today)
+	dateStr := date.UTC().Format("20060102")
+	prefix := fmt.Sprintf("beat-%s-", dateStr)
 
 	maxSeq := 0
 	for _, b := range beats {
@@ -414,6 +419,27 @@ func (s *JSONLStore) GetByLinkedBead(beadID string) ([]beat.Beat, error) {
 	return result, nil
 }
 
+// MostRecent returns the most recently created beat.
+func (s *JSONLStore) MostRecent() (*beat.Beat, error) {
+	beats, err := s.ReadAll()
+	if err != nil {
+		return nil, err
+	}
+
+	if len(beats) == 0 {
+		return nil, fmt.Errorf("no beats found")
+	}
+
+	mostRecent := &beats[0]
+	for i := range beats {
+		if beats[i].CreatedAt.After(mostRecent.CreatedAt) {
+			mostRecent = &beats[i]
+		}
+	}
+
+	return mostRecent, nil
+}
+
 // Path returns the path to the JSONL file.
 func (s *JSONLStore) Path() string {
 	return s.filePath
@@ -486,6 +512,48 @@ func (s *JSONLStore) Delete(id string) error {
 	}
 
 	return s.rewriteUnlocked(filtered)
+}
+
+// BeatExists checks if a beat with the given ID already exists.
+func (s *JSONLStore) BeatExists(id string) (bool, error) {
+	beats, err := s.ReadAll()
+	if err != nil {
+		return false, err
+	}
+	for _, b := range beats {
+		if b.ID == id {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// AppendBulk appends multiple beats to the store in a single operation.
+func (s *JSONLStore) AppendBulk(beats []*beat.Beat) error {
+	if len(beats) == 0 {
+		return nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	f, err := os.OpenFile(s.filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to open beats file: %w", err)
+	}
+	defer f.Close()
+
+	for _, b := range beats {
+		data, err := json.Marshal(b)
+		if err != nil {
+			return fmt.Errorf("failed to marshal beat %s: %w", b.ID, err)
+		}
+		if _, err := f.Write(append(data, '\n')); err != nil {
+			return fmt.Errorf("failed to write beat %s: %w", b.ID, err)
+		}
+	}
+
+	return nil
 }
 
 // rewriteUnlocked rewrites the JSONL file with the given beats.

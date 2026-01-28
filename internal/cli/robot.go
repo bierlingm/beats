@@ -134,6 +134,70 @@ func (c *RobotCLI) Help() error {
 				},
 				"output": "Beat object with updated linked_beads",
 			},
+			{
+				"name":        "--robot-edit",
+				"description": "Edit a beat by ID with JSON input",
+				"input": map[string]interface{}{
+					"id":        "string (required) - beat ID to edit",
+					"content":   "string (optional) - new content",
+					"impetus":   "Impetus object (optional) - new impetus",
+					"date":      "string (optional) - new date (YYYY-MM-DD or RFC3339)",
+					"add_refs":  "array of Reference objects (optional) - references to add",
+					"rm_refs":   "array of strings (optional) - locators to remove",
+					"add_beads": "array of strings (optional) - bead IDs to link",
+					"rm_beads":  "array of strings (optional) - bead IDs to unlink",
+				},
+				"output": "Beat object with updates applied",
+			},
+			{
+				"name":        "--robot-amend",
+				"description": "Edit the most recent beat with JSON input",
+				"input": map[string]interface{}{
+					"content":   "string (optional) - new content",
+					"impetus":   "Impetus object (optional) - new impetus",
+					"date":      "string (optional) - new date (YYYY-MM-DD or RFC3339)",
+					"add_refs":  "array of Reference objects (optional) - references to add",
+					"rm_refs":   "array of strings (optional) - locators to remove",
+					"add_beads": "array of strings (optional) - bead IDs to link",
+					"rm_beads":  "array of strings (optional) - bead IDs to unlink",
+				},
+				"output": "Beat object with updates applied",
+			},
+			{
+				"name":        "--robot-import",
+				"description": "Bulk import beats with conflict resolution",
+				"input": map[string]interface{}{
+					"beats":       "array of Beat objects (required)",
+					"on_conflict": "string (optional) - error|skip|renumber (default: error)",
+					"source":      "string (optional) - source label for impetus.meta",
+				},
+				"output": map[string]interface{}{
+					"imported": "int - number of beats imported",
+					"skipped":  "int - number of beats skipped",
+					"errors":   "array of strings - error messages",
+				},
+			},
+			{
+				"name":        "--robot-export",
+				"description": "Export beats with filters",
+				"input": map[string]interface{}{
+					"format":  "string (optional) - json|jsonl (default: json)",
+					"since":   "string (optional) - filter created_at >= (YYYY-MM-DD or RFC3339)",
+					"until":   "string (optional) - filter created_at <= (YYYY-MM-DD or RFC3339)",
+					"impetus": "string (optional) - filter by impetus label substring",
+					"query":   "string (optional) - filter by content substring",
+				},
+				"output": "array of Beat objects (json) or JSONL lines",
+			},
+			{
+				"name":        "--robot-redate",
+				"description": "Change the creation date of a beat",
+				"input": map[string]interface{}{
+					"id":   "string (required) - beat ID",
+					"date": "string (required) - new date (YYYY-MM-DD or RFC3339)",
+				},
+				"output": "Beat object with updated date",
+			},
 		},
 		"schemas": map[string]interface{}{
 			"Beat": map[string]string{
@@ -900,6 +964,403 @@ func sortBeatsByRecency(beats []beat.Beat) {
 			}
 		}
 	}
+}
+
+// EditInput is the input for --robot-edit.
+type EditInput struct {
+	ID       string         `json:"id"`
+	Content  string         `json:"content,omitempty"`
+	Impetus  *beat.Impetus  `json:"impetus,omitempty"`
+	Date     string         `json:"date,omitempty"`
+	AddRefs  []beat.Reference `json:"add_refs,omitempty"`
+	RmRefs   []string       `json:"rm_refs,omitempty"`
+	AddBeads []string       `json:"add_beads,omitempty"`
+	RmBeads  []string       `json:"rm_beads,omitempty"`
+}
+
+// Edit edits a beat by ID with JSON input.
+func (c *RobotCLI) Edit(input io.Reader) error {
+	var in EditInput
+	if err := json.NewDecoder(input).Decode(&in); err != nil {
+		return outputError("invalid input JSON", err)
+	}
+
+	if in.ID == "" {
+		return outputError("id is required", nil)
+	}
+
+	updated, err := c.store.Update(in.ID, func(b *beat.Beat) error {
+		if in.Content != "" {
+			b.Content = in.Content
+		}
+		if in.Impetus != nil {
+			b.Impetus = *in.Impetus
+		}
+		if in.Date != "" {
+			t, err := time.Parse("2006-01-02", in.Date)
+			if err != nil {
+				t, err = time.Parse(time.RFC3339, in.Date)
+				if err != nil {
+					return fmt.Errorf("invalid date format: %w", err)
+				}
+			}
+			b.CreatedAt = t
+		}
+		// Add references
+		for _, ref := range in.AddRefs {
+			b.References = append(b.References, ref)
+		}
+		// Remove references by locator
+		if len(in.RmRefs) > 0 {
+			rmSet := make(map[string]bool)
+			for _, loc := range in.RmRefs {
+				rmSet[loc] = true
+			}
+			var kept []beat.Reference
+			for _, ref := range b.References {
+				if !rmSet[ref.Locator] {
+					kept = append(kept, ref)
+				}
+			}
+			b.References = kept
+		}
+		// Add beads
+		existingBeads := make(map[string]bool)
+		for _, id := range b.LinkedBeads {
+			existingBeads[id] = true
+		}
+		for _, id := range in.AddBeads {
+			if !existingBeads[id] {
+				b.LinkedBeads = append(b.LinkedBeads, id)
+				existingBeads[id] = true
+			}
+		}
+		// Remove beads
+		if len(in.RmBeads) > 0 {
+			rmSet := make(map[string]bool)
+			for _, id := range in.RmBeads {
+				rmSet[id] = true
+			}
+			var kept []string
+			for _, id := range b.LinkedBeads {
+				if !rmSet[id] {
+					kept = append(kept, id)
+				}
+			}
+			b.LinkedBeads = kept
+		}
+		return nil
+	})
+	if err != nil {
+		return outputError("failed to edit beat", err)
+	}
+
+	return outputJSON(updated)
+}
+
+// AmendInput is the input for --robot-amend (same as EditInput but no id field).
+type AmendInput struct {
+	Content  string         `json:"content,omitempty"`
+	Impetus  *beat.Impetus  `json:"impetus,omitempty"`
+	Date     string         `json:"date,omitempty"`
+	AddRefs  []beat.Reference `json:"add_refs,omitempty"`
+	RmRefs   []string       `json:"rm_refs,omitempty"`
+	AddBeads []string       `json:"add_beads,omitempty"`
+	RmBeads  []string       `json:"rm_beads,omitempty"`
+}
+
+// Amend edits the most recent beat with JSON input.
+func (c *RobotCLI) Amend(input io.Reader) error {
+	var in AmendInput
+	if err := json.NewDecoder(input).Decode(&in); err != nil {
+		return outputError("invalid input JSON", err)
+	}
+
+	mostRecent, err := c.store.MostRecent()
+	if err != nil {
+		return outputError("failed to get most recent beat", err)
+	}
+
+	// Convert to EditInput and use Edit logic
+	editIn := EditInput{
+		ID:       mostRecent.ID,
+		Content:  in.Content,
+		Impetus:  in.Impetus,
+		Date:     in.Date,
+		AddRefs:  in.AddRefs,
+		RmRefs:   in.RmRefs,
+		AddBeads: in.AddBeads,
+		RmBeads:  in.RmBeads,
+	}
+
+	updated, err := c.store.Update(editIn.ID, func(b *beat.Beat) error {
+		if editIn.Content != "" {
+			b.Content = editIn.Content
+		}
+		if editIn.Impetus != nil {
+			b.Impetus = *editIn.Impetus
+		}
+		if editIn.Date != "" {
+			t, err := time.Parse("2006-01-02", editIn.Date)
+			if err != nil {
+				t, err = time.Parse(time.RFC3339, editIn.Date)
+				if err != nil {
+					return fmt.Errorf("invalid date format: %w", err)
+				}
+			}
+			b.CreatedAt = t
+		}
+		for _, ref := range editIn.AddRefs {
+			b.References = append(b.References, ref)
+		}
+		if len(editIn.RmRefs) > 0 {
+			rmSet := make(map[string]bool)
+			for _, loc := range editIn.RmRefs {
+				rmSet[loc] = true
+			}
+			var kept []beat.Reference
+			for _, ref := range b.References {
+				if !rmSet[ref.Locator] {
+					kept = append(kept, ref)
+				}
+			}
+			b.References = kept
+		}
+		existingBeads := make(map[string]bool)
+		for _, id := range b.LinkedBeads {
+			existingBeads[id] = true
+		}
+		for _, id := range editIn.AddBeads {
+			if !existingBeads[id] {
+				b.LinkedBeads = append(b.LinkedBeads, id)
+				existingBeads[id] = true
+			}
+		}
+		if len(editIn.RmBeads) > 0 {
+			rmSet := make(map[string]bool)
+			for _, id := range editIn.RmBeads {
+				rmSet[id] = true
+			}
+			var kept []string
+			for _, id := range b.LinkedBeads {
+				if !rmSet[id] {
+					kept = append(kept, id)
+				}
+			}
+			b.LinkedBeads = kept
+		}
+		return nil
+	})
+	if err != nil {
+		return outputError("failed to amend beat", err)
+	}
+
+	return outputJSON(updated)
+}
+
+// ImportInput is the input for --robot-import.
+type ImportInput struct {
+	Beats      []beat.Beat `json:"beats"`
+	OnConflict string      `json:"on_conflict,omitempty"` // error, skip, renumber
+	Source     string      `json:"source,omitempty"`
+}
+
+// ImportOutput is the output for --robot-import.
+type ImportOutput struct {
+	Imported int      `json:"imported"`
+	Skipped  int      `json:"skipped"`
+	Errors   []string `json:"errors"`
+}
+
+// Import bulk imports beats with conflict resolution.
+func (c *RobotCLI) Import(input io.Reader) error {
+	var in ImportInput
+	if err := json.NewDecoder(input).Decode(&in); err != nil {
+		return outputError("invalid input JSON", err)
+	}
+
+	if len(in.Beats) == 0 {
+		return outputError("beats array is required and must not be empty", nil)
+	}
+
+	onConflict := in.OnConflict
+	if onConflict == "" {
+		onConflict = "error"
+	}
+
+	// Get existing IDs
+	existingIDs := make(map[string]bool)
+	existing, _ := c.store.ReadAll()
+	for _, b := range existing {
+		existingIDs[b.ID] = true
+	}
+
+	output := ImportOutput{Errors: []string{}}
+
+	for _, b := range in.Beats {
+		// Set source if provided
+		if in.Source != "" {
+			if b.Impetus.Meta == nil {
+				b.Impetus.Meta = make(map[string]string)
+			}
+			b.Impetus.Meta["source"] = in.Source
+		}
+
+		// Check for conflict
+		if existingIDs[b.ID] {
+			switch onConflict {
+			case "skip":
+				output.Skipped++
+				continue
+			case "renumber":
+				seq, err := c.store.NextSequence()
+				if err != nil {
+					output.Errors = append(output.Errors, fmt.Sprintf("failed to get sequence for %s: %v", b.ID, err))
+					continue
+				}
+				b.ID = fmt.Sprintf("beat-%s-%03d", b.CreatedAt.Format("20060102"), seq)
+			default: // error
+				output.Errors = append(output.Errors, fmt.Sprintf("beat %s already exists", b.ID))
+				continue
+			}
+		}
+
+		// Set timestamps if missing
+		if b.CreatedAt.IsZero() {
+			b.CreatedAt = time.Now()
+		}
+		b.UpdatedAt = time.Now()
+
+		if err := c.store.Append(&b); err != nil {
+			output.Errors = append(output.Errors, fmt.Sprintf("failed to import %s: %v", b.ID, err))
+			continue
+		}
+		existingIDs[b.ID] = true
+		output.Imported++
+	}
+
+	return outputJSON(output)
+}
+
+// ExportInput is the input for --robot-export.
+type ExportInput struct {
+	Format  string `json:"format,omitempty"` // json, jsonl
+	Since   string `json:"since,omitempty"`
+	Until   string `json:"until,omitempty"`
+	Impetus string `json:"impetus,omitempty"`
+	Query   string `json:"query,omitempty"`
+}
+
+// Export exports beats with filters.
+func (c *RobotCLI) Export(input io.Reader) error {
+	var in ExportInput
+	if err := json.NewDecoder(input).Decode(&in); err != nil {
+		return outputError("invalid input JSON", err)
+	}
+
+	beats, err := c.store.ReadAll()
+	if err != nil {
+		return outputError("failed to read beats", err)
+	}
+
+	// Apply filters
+	var filtered []beat.Beat
+	for _, b := range beats {
+		// Since filter
+		if in.Since != "" {
+			sinceTime, err := time.Parse("2006-01-02", in.Since)
+			if err != nil {
+				sinceTime, err = time.Parse(time.RFC3339, in.Since)
+				if err != nil {
+					return outputError("invalid since format", err)
+				}
+			}
+			if b.CreatedAt.Before(sinceTime) {
+				continue
+			}
+		}
+		// Until filter
+		if in.Until != "" {
+			untilTime, err := time.Parse("2006-01-02", in.Until)
+			if err != nil {
+				untilTime, err = time.Parse(time.RFC3339, in.Until)
+				if err != nil {
+					return outputError("invalid until format", err)
+				}
+			}
+			if b.CreatedAt.After(untilTime) {
+				continue
+			}
+		}
+		// Impetus filter
+		if in.Impetus != "" && !strings.Contains(strings.ToLower(b.Impetus.Label), strings.ToLower(in.Impetus)) {
+			continue
+		}
+		// Query filter
+		if in.Query != "" && !strings.Contains(strings.ToLower(b.Content), strings.ToLower(in.Query)) {
+			continue
+		}
+		filtered = append(filtered, b)
+	}
+
+	format := in.Format
+	if format == "" {
+		format = "json"
+	}
+
+	if format == "jsonl" {
+		// Output JSONL
+		for _, b := range filtered {
+			data, err := json.Marshal(b)
+			if err != nil {
+				return outputError("failed to marshal beat", err)
+			}
+			fmt.Fprintln(jsonOutput, string(data))
+		}
+		return nil
+	}
+
+	// Default: JSON array
+	return outputJSON(filtered)
+}
+
+// RedateInput is the input for --robot-redate.
+type RedateInput struct {
+	ID   string `json:"id"`
+	Date string `json:"date"`
+}
+
+// Redate changes the creation date of a beat.
+func (c *RobotCLI) Redate(input io.Reader) error {
+	var in RedateInput
+	if err := json.NewDecoder(input).Decode(&in); err != nil {
+		return outputError("invalid input JSON", err)
+	}
+
+	if in.ID == "" {
+		return outputError("id is required", nil)
+	}
+	if in.Date == "" {
+		return outputError("date is required", nil)
+	}
+
+	t, err := time.Parse("2006-01-02", in.Date)
+	if err != nil {
+		t, err = time.Parse(time.RFC3339, in.Date)
+		if err != nil {
+			return outputError("invalid date format (use YYYY-MM-DD or RFC3339)", err)
+		}
+	}
+
+	updated, err := c.store.Update(in.ID, func(b *beat.Beat) error {
+		b.CreatedAt = t
+		return nil
+	})
+	if err != nil {
+		return outputError("failed to redate beat", err)
+	}
+
+	return outputJSON(updated)
 }
 
 func outputJSON(v interface{}) error {
