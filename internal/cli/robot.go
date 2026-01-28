@@ -968,14 +968,14 @@ func sortBeatsByRecency(beats []beat.Beat) {
 
 // EditInput is the input for --robot-edit.
 type EditInput struct {
-	ID       string         `json:"id"`
-	Content  string         `json:"content,omitempty"`
-	Impetus  *beat.Impetus  `json:"impetus,omitempty"`
-	Date     string         `json:"date,omitempty"`
+	ID       string           `json:"id"`
+	Content  string           `json:"content,omitempty"`
+	Impetus  *beat.Impetus    `json:"impetus,omitempty"`
+	Date     string           `json:"date,omitempty"`
 	AddRefs  []beat.Reference `json:"add_refs,omitempty"`
-	RmRefs   []string       `json:"rm_refs,omitempty"`
-	AddBeads []string       `json:"add_beads,omitempty"`
-	RmBeads  []string       `json:"rm_beads,omitempty"`
+	RmRefs   []string         `json:"rm_refs,omitempty"`
+	AddBeads []string         `json:"add_beads,omitempty"`
+	RmBeads  []string         `json:"rm_beads,omitempty"`
 }
 
 // Edit edits a beat by ID with JSON input.
@@ -1007,9 +1007,7 @@ func (c *RobotCLI) Edit(input io.Reader) error {
 			b.CreatedAt = t
 		}
 		// Add references
-		for _, ref := range in.AddRefs {
-			b.References = append(b.References, ref)
-		}
+		b.References = append(b.References, in.AddRefs...)
 		// Remove references by locator
 		if len(in.RmRefs) > 0 {
 			rmSet := make(map[string]bool)
@@ -1060,13 +1058,13 @@ func (c *RobotCLI) Edit(input io.Reader) error {
 
 // AmendInput is the input for --robot-amend (same as EditInput but no id field).
 type AmendInput struct {
-	Content  string         `json:"content,omitempty"`
-	Impetus  *beat.Impetus  `json:"impetus,omitempty"`
-	Date     string         `json:"date,omitempty"`
+	Content  string           `json:"content,omitempty"`
+	Impetus  *beat.Impetus    `json:"impetus,omitempty"`
+	Date     string           `json:"date,omitempty"`
 	AddRefs  []beat.Reference `json:"add_refs,omitempty"`
-	RmRefs   []string       `json:"rm_refs,omitempty"`
-	AddBeads []string       `json:"add_beads,omitempty"`
-	RmBeads  []string       `json:"rm_beads,omitempty"`
+	RmRefs   []string         `json:"rm_refs,omitempty"`
+	AddBeads []string         `json:"add_beads,omitempty"`
+	RmBeads  []string         `json:"rm_beads,omitempty"`
 }
 
 // Amend edits the most recent beat with JSON input.
@@ -1110,9 +1108,7 @@ func (c *RobotCLI) Amend(input io.Reader) error {
 			}
 			b.CreatedAt = t
 		}
-		for _, ref := range editIn.AddRefs {
-			b.References = append(b.References, ref)
-		}
+		b.References = append(b.References, editIn.AddRefs...)
 		if len(editIn.RmRefs) > 0 {
 			rmSet := make(map[string]bool)
 			for _, loc := range editIn.RmRefs {
@@ -1315,7 +1311,9 @@ func (c *RobotCLI) Export(input io.Reader) error {
 			if err != nil {
 				return outputError("failed to marshal beat", err)
 			}
-			fmt.Fprintln(jsonOutput, string(data))
+			if _, err := fmt.Fprintln(jsonOutput, string(data)); err != nil {
+				return outputError("failed to write beat", err)
+			}
 		}
 		return nil
 	}
